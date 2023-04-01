@@ -12,8 +12,9 @@ To use the package, simply import the relevant classes and models into your Fast
 
 ```python
 from fastapi import FastAPI
-from fastapi_integration.models import User
-from fastapi_integration.orm import QueryMixin
+from fastapi_integration.models import User ## Built-in User Model
+from fastapi_integration.config import  FastApiConfig ## Built-in Config Model
+from fastapi_integration import FastAPIExtended ## Built-in app Model that has all functionality supported
 ```
 
 
@@ -23,6 +24,7 @@ The package currently includes the following features:
 Pre-built models for common database tables (e.g. User, Role, etc.)
 The SQLAlchemyORM object, which makes it easy to perform common database operations using SQLAlchemy and asyncpg
 Automatic database connection management, so you don't have to worry about opening/closing connections
+Integrability with providing admin CRUD endpoints and interface
 
 
 # Contributing
