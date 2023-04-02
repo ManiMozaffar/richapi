@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastapi-integration",
-    version="0.1.0",
+    version="0.0.1",
     author="Mani Mozaffar",
     author_email="mani.mozaffar@gmail.com",
     description="A PyPI package for simplifying FastAPI-ORM integration",

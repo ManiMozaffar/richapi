@@ -1,3 +1,5 @@
+__version__ = "0.0.1"
+
 from fastapi import FastAPI, HTTPException, routing
 from fastapi.exceptions import RequestValidationError
 from starlette.middleware.cors import CORSMiddleware
@@ -8,15 +10,24 @@ from typing import Callable, Type, Union, List, Tuple, Dict, Any
 from .config import FastApiConfig
 from pydantic import ValidationError
 import logging
-from db import Engine
+from .db import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
-from common import Base
+from .auth.routers import create_auth_router
+from .queries.base import QueryMixin
+from sqlalchemy.orm import declarative_base
+
+
+
 
 
 class FastAPIExtended(FastAPI):
-    settings: Type[FastApiConfig] = FastApiConfig
+    settings: Type[FastApiConfig] 
     _routers: list = list()
+    add_auth_router: bool = True
+    i = 0
 
+    
+    
 
     @property
     def routers(self) -> List[Tuple[routing.APIRouter, str]]:
@@ -29,12 +40,13 @@ class FastAPIExtended(FastAPI):
 
 
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, Users=None, *args, **kwargs):
         user_config = self.get_user_config()
+        self.Base = declarative_base()
         super().__init__(*args, **{**kwargs, **user_config})
-        
 
-        self.db_engine = Engine(user_config)
+        self.settings = self.settings()
+        self.db_engine = Engine(self.settings)
         self.add_middleware(
             CORSMiddleware,
             allow_origins=self.settings.allowed_hosts,
@@ -47,10 +59,22 @@ class FastAPIExtended(FastAPI):
         self.add_event_handler("shutdown", self.create_stop_app_handler())
         self.add_exception_handler(HTTPException, self.http_error_handler)
         self.add_exception_handler(RequestValidationError, self.http422_error_handler)
-        
+
+
         for router in self.routers:
             self.include_router(router[0], prefix=router[1])
+        
 
+
+        if Users:
+            class Users(Users, self.Base):
+                __tablename__ = "users"
+
+            if self.add_auth_router:
+                auth_router = create_auth_router(self.db_engine, self.settings, Users)
+                self.include_router(auth_router, prefix="/auth")
+        
+        
 
 
 
@@ -67,14 +91,16 @@ class FastAPIExtended(FastAPI):
     def create_start_app_handler(self) -> Callable:
         async def start_app() -> None:
             logging.info("Connecting to  PostgreSQL")
-            async with AsyncSession(self.db_engine) as session:
+            async with AsyncSession(self.db_engine.engine) as session:
                 async with session.begin():
                     pass
             
             async with self.db_engine.engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+                await conn.run_sync(self.Base.metadata.create_all)
             logging.info("Connection established")
-            self.db_engine.engine.test_connection()
+
+
+            self.db_engine.get_redis_db().test()
         return start_app
         # Implement your startup event handler here
 

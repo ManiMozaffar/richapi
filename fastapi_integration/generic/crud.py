@@ -1,10 +1,10 @@
 from pydantic import BaseModel, HttpUrl, Field
 from fastapi import HTTPException, status, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from queries.base import QueryMixin
+from ..queries.base import QueryMixin
 from typing import Type, Union, Optional, Tuple, Generic, List, TypeVar, Union, Any
 from urllib.parse import urlencode
-from config import FastApiConfig
+from ..config import FastApiConfig
 
 
 T = TypeVar("T")

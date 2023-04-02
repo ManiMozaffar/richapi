@@ -4,22 +4,22 @@ from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY
 from .utils import manager_create_access_token, manager_get_current_user, manager_delete_access_token
 from fastapi.security import OAuth2PasswordRequestForm
 from .security import pwd_context
-from models import User
 from .schemas import AuthModel, UserOut
-from common import Status
+from ..common import Status
 from collections.abc import AsyncGenerator
-from db import Engine
+from ..db import Engine
+from ..config import FastApiConfig
+from ..queries.base import QueryMixin
 
 
-
-def create_auth_router(db_session:Engine, config) -> APIRouter:
+def create_auth_router(db_engine:Engine, config:FastApiConfig, User:QueryMixin) -> APIRouter:
     auth_router = APIRouter()
-    get_current_user = manager_get_current_user(db_session, config)
+    get_current_user = manager_get_current_user(db_engine, config, User)
 
     @auth_router.post("/token", response_model=AuthModel)
     async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),
-        db_session: AsyncSession = Depends(db_session),
+        db_session: AsyncSession = Depends(db_engine.get_pg_db),
     ):
         user = await User.get(db_session=db_session, email=form_data.username)
         if user is None or not pwd_context.verify(form_data.password, user.password):
@@ -28,7 +28,7 @@ def create_auth_router(db_session:Engine, config) -> APIRouter:
                 detail="Incorrect email or password",
             )
 
-        create_access_token = manager_create_access_token(db_session, config)
+        create_access_token = manager_create_access_token(db_session, config, User)
         access_token = create_access_token(
             data={"sub": user.id}, 
         )
@@ -49,8 +49,9 @@ def create_auth_router(db_session:Engine, config) -> APIRouter:
             return Status(message="Already logged out", status="ok")
         
         else:
-            delete_access_token = manager_delete_access_token(db_session, config)
+            delete_access_token = manager_delete_access_token(db_engine, config)
             delete_access_token(token[1])
             return Status(message="Logged Out", status="ok")
+
 
     return auth_router
