@@ -134,13 +134,28 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
+Check out the test file for latest using case and examples of how Query Translation works
+
+
+
 # Features
-The package currently includes the following features:
+The package currently will include the following features:
 
 Pre-built models for common database tables (e.g. User, Role, etc.)
 The SQLAlchemyORM object, which makes it easy to perform common database operations using SQLAlchemy and asyncpg
 Automatic database connection management, so you don't have to worry about opening/closing connections
 Integrability with providing admin CRUD endpoints and interface
+Integrability with other packages that supports integration with sqlalchemy and pgasync
+Command Line Support
+Celery Support
+
+
+# Why ?
+django allows you to write acceptable code with no studing of architecture principles. 
+It does not allow you to write good code, but it protects you from writing very bad code. In fastapi you have ability to go both ways.
+With this library, as time goes by, it will protect you to not write very bad code, however you can still bypass all these protections, and write your own code if you know what you are up to.
+
+So if you're more of a beginner in web development and you have no good fundamental of architecture principles, then here you are. 
 
 
 # Contributing
