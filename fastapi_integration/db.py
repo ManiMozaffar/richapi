@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 import redis
 import logging
 from .config import FastApiConfig
+from contextlib import asynccontextmanager
 
 
 
@@ -51,7 +52,14 @@ class Engine:
             self.engine, autoflush=False, expire_on_commit=False, class_=AsyncSession
         )
         async with self.async_session_factory() as session:
-            logging.debug(f"ASYNC Pool: {self.engine.pool.status()}")
+            logging.info(f"ASYNC Pool: {self.engine.pool.status()}")
+            yield session
+
+
+    @asynccontextmanager
+    async def get_pg_db_with_async(self) -> AsyncSession:
+        async with self.async_session_factory() as session:
+            logging.info(f"ASYNC Pool: {self.engine.pool.status()}")
             yield session
 
          

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastapi-integration",
-    version="0.0.1",
+    version="0.0.2",
     author="Mani Mozaffar",
     author_email="mani.mozaffar@gmail.com",
     description="A PyPI package for simplifying FastAPI-ORM integration",
@@ -13,4 +13,6 @@ setup(
         "sqlalchemy",
         "redis"
     ],
+    long_description="",
+    long_description_content_type="text/plain"
 )

@@ -7,11 +7,11 @@ from sqlalchemy import (
     String,
     update as sqla_update,
 )
-from sqlalchemy.sql.selectable import Self
+from sqlalchemy.sql.selectable import Self, TypedReturnsRows
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Type, Union, Tuple, Any
 from sqlalchemy import func, or_
-
+import logging
 
 
 class SignalMixin:
@@ -23,10 +23,9 @@ class SignalMixin:
             return _instance
         else:
             return instance
-        
-        
+
     @classmethod
-    async def _pre_update(cls, db_session: AsyncSession, stmt=None, **kwargs):
+    async def _pre_update(cls, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
         _stmt = await cls.pre_update(db_session, stmt=stmt, **kwargs)
         if _stmt is not None:
             return _stmt
@@ -34,23 +33,20 @@ class SignalMixin:
             return stmt
 
     @classmethod
-    async def _pre_delete(cls, db_session: AsyncSession, stmt=None, **kwargs):
+    async def _pre_delete(cls, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
         _stmt = await cls.pre_delete(db_session, stmt=stmt, **kwargs)
         if _stmt is not None:
             return _stmt
         else:
             return stmt
 
-
     @classmethod
     async def pre_save(cls, db_session: AsyncSession, instance, **kwargs):
         pass
 
-
     @classmethod
     async def pre_update(cls, db_session: AsyncSession, stmt=None, **kwargs):
         pass
-
 
     @classmethod
     async def pre_delete(cls, db_session: AsyncSession, stmt=None, **kwargs):
@@ -58,8 +54,21 @@ class SignalMixin:
 
 
 
-
 class QueryMixin(SignalMixin):
+    condition_map = {
+        'icontains': lambda column, value: func.lower(column).contains(func.lower(value)),
+        'le': lambda column, value: column <= value,
+        'lt': lambda column, value: column < value,
+    }
+
+
+    @classmethod
+    async def apply_filter_type(cls, filter_type:str, conditions:list, column, value) -> list:
+        conditions.append(cls.condition_map.get(filter_type, lambda column, value: column == value)(column, value))
+        return conditions
+
+
+
 
     @classmethod
     def _apply_ordering(cls, stmt, order_by: Union[str, Tuple[str]]) -> None:
@@ -86,9 +95,8 @@ class QueryMixin(SignalMixin):
 
 
 
-
     @classmethod
-    async def _build_query(cls, joins=None, order_by=None, skip:int=None, limit:int=None, **kwargs) -> Self:
+    async def _build_query(cls, joins=None, order_by=None, skip:int=None, limit:int=None, **kwargs) -> TypedReturnsRows:
         stmt = select(cls)
 
         if joins is None:
@@ -99,24 +107,30 @@ class QueryMixin(SignalMixin):
 
         conditions = []
         for key, value in kwargs.items():
-            if '__' in key:
-                relationship_name, attribute_name = key.split('__')
-                related_model = None
-                for join_model in joins:
-                    if join_model.__name__.lower() == relationship_name.lower():
-                        related_model = join_model
-                        break
+            
+            filter_parts = key.split('__')
+            column_name = filter_parts[0]
+            filter_type = filter_parts[1] if len(filter_parts) > 1 else None
+            
+            related_model = next((join_model for join_model in joins if join_model.__name__.lower() == column_name.lower()), None)
+            if related_model is None and column_name:
+                if hasattr(cls, column_name):
+                    related_model = cls
 
-                if related_model is not None:
-                    conditions.append(getattr(related_model, attribute_name) == value)
-            else:
-                conditions.append(getattr(cls, key) == value)
+            
+            if related_model is not None:
+                filter_field = next((column_name for obj in filter_parts if hasattr(related_model, obj)), None)
+                if filter_field == None:
+                    raise ValueError("This Column does exists")
+                column = getattr(related_model, filter_field)
+                conditions = await cls.apply_filter_type(filter_type, conditions, column, value)
+
 
         if conditions:
             stmt = stmt.where(and_(*conditions))
 
         if order_by:
-            stmt = stmt.order_by(order_by)
+            stmt = cls._apply_ordering(stmt, order_by)
         
         if skip:
             stmt = stmt.offset(skip)
@@ -125,14 +139,13 @@ class QueryMixin(SignalMixin):
             stmt = stmt.limit(limit)
 
         return stmt
+
     
-        
+
 
     @classmethod
-    async def build_handler(cls, joins=None, order_by=None, skip: int = 0, limit: int = 20, **kwargs) -> Self:
+    async def build_handler(cls, joins=None, order_by=None, skip: int = 0, limit: int = 20, **kwargs) -> TypedReturnsRows:
         cached_query = await cls._build_query(joins, skip=skip, limit=limit, **kwargs)
-        if order_by != None and cached_query != None:
-            cached_query = cls._apply_ordering(cached_query, order_by)
         return cached_query
 
 
@@ -142,8 +155,6 @@ class QueryMixin(SignalMixin):
         result = await db_session.execute(stmt)
         instance = result.scalars().first()
         return instance
-
-
 
     @classmethod
     async def filter(cls, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, get_count=False, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
@@ -160,15 +171,11 @@ class QueryMixin(SignalMixin):
             return (instances, count)
 
 
-
     @classmethod
     async def count(cls, db_session: AsyncSession, stmt) -> int:
         stmt = stmt.with_only_columns(func.count(cls.id))
         result = await db_session.execute(stmt)
         return result.scalar()
-
-
-
 
     @classmethod
     async def create(cls, db_session: AsyncSession, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
@@ -184,6 +191,13 @@ class QueryMixin(SignalMixin):
         return instance
 
 
+
+    @classmethod
+    async def all(cls, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, get_count=False) -> Union[Type[Any], Type["QueryMixin"]]:
+        return await cls.filter(db_session, joins, order_by=None, skip=0, limit=None)
+
+
+
     @classmethod
     async def delete(cls, db_session: AsyncSession, joins=None, **kwargs) -> int:
         stmt = await cls.build_handler(joins=joins, **kwargs)
@@ -192,7 +206,7 @@ class QueryMixin(SignalMixin):
         result = await db_session.execute(delete_stmt)
         await db_session.commit()
         return result.rowcount
-    
+
 
 
     @classmethod
@@ -205,13 +219,9 @@ class QueryMixin(SignalMixin):
         if result.rowcount == 1:
             updated_instance = await cls.get(db_session, **kwargs)
             return updated_instance
-    
-        elif result.rowcount == 0:
-            return None
         
         else:
-            return result.rowcount
-    
+            return result.rowcount or None
 
 
     @classmethod
@@ -219,22 +229,10 @@ class QueryMixin(SignalMixin):
         if agg_func.lower() == "sum":
             aggregation = func.sum(getattr(cls, field))
         else:
-            raise ValueError(f"Unsupported aggregation function '{agg_func}'")
+            raise NotImplementedError(f"Unsupported aggregation function '{agg_func}'")
 
         stmt = await cls.build_handler(joins=joins, **kwargs)
         stmt = stmt.select_from(cls).with_only_columns(aggregation)
         result = await db_session.execute(stmt)
         return result.scalar()
-
-
-
-    @classmethod
-    async def icontains(cls, db_session: AsyncSession, fields: list, value: str, joins=None, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
-        stmt = await cls.build_handler(joins=joins, **kwargs)
         
-        conditions = [func.lower(getattr(cls, field)).contains(func.lower(value)) for field in fields]
-        stmt = stmt.where(or_(*conditions))
-
-        result = await db_session.execute(stmt)
-        instances = result.scalars().all()
-        return instances

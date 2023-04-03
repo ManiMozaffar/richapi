@@ -1,4 +1,4 @@
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 from fastapi import FastAPI, HTTPException, routing
 from fastapi.exceptions import RequestValidationError
@@ -25,6 +25,7 @@ class FastAPIExtended(FastAPI):
     _routers: list = list()
     add_auth_router: bool = True
     i = 0
+    Users: QueryMixin
 
     
     
