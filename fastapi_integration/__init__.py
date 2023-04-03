@@ -9,7 +9,6 @@ from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY
 from typing import Callable, Type, Union, List, Tuple, Dict, Any
 from .config import FastApiConfig
 from pydantic import ValidationError
-import logging
 from .db import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
 from .auth.routers import create_auth_router
@@ -91,19 +90,9 @@ class FastAPIExtended(FastAPI):
 
     def create_start_app_handler(self) -> Callable:
         async def start_app() -> None:
-            logging.info("Connecting to  PostgreSQL")
-            async with AsyncSession(self.db_engine.engine) as session:
-                async with session.begin():
-                    pass
-            
-            async with self.db_engine.engine.begin() as conn:
-                await conn.run_sync(self.Base.metadata.create_all)
-            logging.info("Connection established")
-
-
+            self.db_engine.create_database(self.Base)
             self.db_engine.get_redis_db().test()
         return start_app
-        # Implement your startup event handler here
 
 
 

@@ -3,7 +3,6 @@ from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
-
 class AbstractBaseUser(Model):
     __abstract__ = True
 
@@ -29,3 +28,7 @@ class AbstractOAuth2User(Model):
     refresh_token = Column(String(200), unique=True, index=True)
     account_id = Column(String(30), unique=True, index=True)
     account_email = Column(String(200), unique=True, index=True)
+
+
+class AbstractModel(Model):
+    __abstract__ = True

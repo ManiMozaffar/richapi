@@ -49,6 +49,7 @@ if __name__ == "__main__":
 Or you can use the translated version of SQLAlchemy to django ORM. Here is the implemented passed test.
 
 ```python
+
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import (
     select
@@ -69,6 +70,7 @@ def get_random_info():
 
 class TestQueryMixin(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        await db_engine.create_database(Base)
         async with db_engine.get_pg_db_with_async() as session:
             self.new_email = str(random_info[1]).join(random.choices(string.ascii_lowercase, k=2))
             new_username = str(random_info[2]).join(random.choices(string.ascii_lowercase, k=2))

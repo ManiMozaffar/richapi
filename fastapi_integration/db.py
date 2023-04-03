@@ -54,6 +54,19 @@ class Engine:
         async with self.async_session_factory() as session:
             logging.info(f"ASYNC Pool: {self.engine.pool.status()}")
             yield session
+    
+
+    
+    async def create_database(self, Base):
+        logging.info("Connecting to  PostgreSQL")
+        async with AsyncSession(self.engine) as session:
+            async with session.begin():
+                pass
+        
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logging.info("Connection established")
+
 
 
     @asynccontextmanager
