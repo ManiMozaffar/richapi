@@ -56,14 +56,31 @@ class SignalMixin:
 
 class QueryMixin(SignalMixin):
     condition_map = {
-        'icontains': lambda column, value: func.lower(column).contains(func.lower(value)),
-        'le': lambda column, value: column <= value,
+        'exact': lambda column, value: column == value,
+        'contains': lambda column, value: column.contains(value),
+        'in': lambda column, value: column.in_(value),
+        'gt': lambda column, value: column > value,
+        'gte': lambda column, value: column >= value,
         'lt': lambda column, value: column < value,
+        'lte': lambda column, value: column <= value,
+        'startswith': lambda column, value: column.startswith(value),
+        'endswith': lambda column, value: column.endswith(value),
+        'range': lambda column, value: column.between(value[0], value[1]),
+        'date': lambda column, value: func.date(column) == value,
+        'year': lambda column, value: func.extract('year', column) == value,
+        'month': lambda column, value: func.extract('month', column) == value,
+        'day': lambda column, value: func.extract('day', column) == value,
+
+        'iexact': lambda column, value: column.ilike(value),
+        'icontains': lambda column, value: column.ilike(f"%{value}%"),
+        'istartswith': lambda column, value: column.ilike(f"{value}%"),
+        'iendswith': lambda column, value: column.ilike(f"%{value}"),
     }
 
 
+
     @classmethod
-    async def apply_filter_type(cls, filter_type:str, conditions:list, column, value) -> list:
+    async def apply_filter_type(cls, filter_type: str, conditions: list, column, value) -> list:
         conditions.append(cls.condition_map.get(filter_type, lambda column, value: column == value)(column, value))
         return conditions
 
@@ -235,4 +252,3 @@ class QueryMixin(SignalMixin):
         stmt = stmt.select_from(cls).with_only_columns(aggregation)
         result = await db_session.execute(stmt)
         return result.scalar()
-        
