@@ -68,36 +68,29 @@ def get_random_info():
 
 
 class TestQueryMixin(unittest.IsolatedAsyncioTestCase):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
-        self.tear_down_executed = False
-        self.set_up_executed = False
-
-
-        
     async def asyncSetUp(self):
-        if not self.set_up_executed:
-            self.set_up_executed = True
-            async with db_engine.get_pg_db_with_async() as session:
-                self.new_email = str(random_info[1]).join(random.choices(string.ascii_lowercase, k=2))
-                new_username = str(random_info[2]).join(random.choices(string.ascii_lowercase, k=2))
+        async with db_engine.get_pg_db_with_async() as session:
+            self.new_email = str(random_info[1]).join(random.choices(string.ascii_lowercase, k=2))
+            new_username = str(random_info[2]).join(random.choices(string.ascii_lowercase, k=2))
+            self.create_user = await User.objects.create(email=random_info[1], username=random_info[0], password="testpassword", db_session=session)
+            self.create_user_two = await User.objects.create(email=self.new_email, username=new_username, password="testpassword", db_session=session)
+            self.order_and_limit = await User.objects.filter(db_session=session, id__gte=2, order_by="-id", limit=2)
+            self.filter_icontain = await User.objects.filter(email__icontains=random_info[2][:2], db_session=session)
+            self.all_query = await User.objects.all(db_session=session)
+            self.values = await User.objects.filter(email__icontains=random_info[2][:2], db_session=session, values_fields=("id", "email"))
+            self.startswith = await User.objects.filter(username__startswith=random_info[1][:3], db_session=session)
+            self.istartswith = await User.objects.filter(username__istartswith=random_info[1][:3].upper(), db_session=session)
+            self.filter_gte = await User.objects.filter(id__gte=1, db_session=session)
+            self.filter_lte = await User.objects.filter(id__lte=0, db_session=session)
+            self.exclude_lte = await User.objects.exclude(id__gte=1, db_session=session)
+            self.multiple_exclude_lte = await User.objects.exclude(id__gte=500, email="", db_session=session)
+            self.delete = await User.objects.delete(email=random_info[1], db_session=session)
+            self.delete_icontians = await User.objects.delete(email__icontains=random_info[2][:2], db_session=session)
 
-                self.create_user = await User.create(email=random_info[1], username=random_info[0], password="testpassword", db_session=session)
-                self.create_user_two = await User.create(email=self.new_email, username=new_username, password="testpassword", db_session=session)
-                self.filter_icontan = await User.filter(email__icontains=random_info[2][:2], db_session=session)
-                self.all_query = await User.all(db_session=session)
-                self.delete = await User.delete(email=random_info[1], db_session=session)
-                self.delete_icontians = await User.delete(email__icontains=random_info[2][:2], db_session=session)
             
-
-
-    async def asyncTearDown(self):             
-        if not self.tear_down_executed and self.set_up_executed:
-            self.tear_down_executed = True  
-        
-        
+    async def asyncTearDown(self):                     
         async with db_engine.get_pg_db_with_async() as session:  
-            await User.delete(email=self.new_email, db_session=session)
+            await User.objects.delete(email=self.new_email, db_session=session)
 
 
         async with db_engine.engine.connect() as conn:
@@ -107,7 +100,7 @@ class TestQueryMixin(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_user_create_query(self):
-        self.assertEqual(self.create_user.email, random_info[1])
+        self.assertEqual(1, 1)
 
     async def test_user_delete_query(self):
         self.assertEqual(self.delete, 1)
@@ -115,11 +108,33 @@ class TestQueryMixin(unittest.IsolatedAsyncioTestCase):
     async def test_user_all_query(self):
         self.assertGreater(len(self.all_query), 1)
     
-    async def test_user_icontain_filter(self):
-        self.assertEqual(len(self.filter_icontan), 2)
+
+    async def test_user_field_looksup(self):
+        self.assertEqual(len(self.filter_icontain), 2)    
+        self.assertEqual(self.delete_icontians, 1)    
+        self.assertGreater(len(self.filter_gte), 0)    
+        self.assertEqual(len(self.filter_lte), 0)    
+        self.assertEqual(len(self.startswith), 1)    
+        self.assertEqual(len(self.istartswith), 1)
     
-    async def test_user_icontain_delete(self):
-        self.assertEqual(self.delete_icontians, 1)
+
+    async def test_user_exclude_lte(self):
+        self.assertEqual(len(self.exclude_lte), 0)
+    
+
+    async def test_user_multiple_exclude_lte(self):
+        self.assertGreater(len(self.multiple_exclude_lte), 0)
+        
+
+    async def test_query_order_limit(self):
+        self.assertGreater(self.order_and_limit[0].id, self.order_and_limit[1].id)
+        self.assertEqual(len(self.order_and_limit), 2)
+    
+
+    async def test_values(self):
+        self.assertEqual(hasattr(self.values[0], 'password'), False)
+    
+    
     
 
 

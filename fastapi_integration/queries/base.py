@@ -14,44 +14,43 @@ from sqlalchemy import func, or_
 import logging
 
 
-class SignalMixin:
+class BaseQuery:
+    def __init__(self, cls):
+        self.cls = cls
 
-    @classmethod
-    async def _pre_save(cls, db_session: AsyncSession, instance=None, **kwargs):
-        _instance = await cls.pre_save(db_session, instance=instance, **kwargs)
+
+
+class SignalMixin(BaseQuery):
+
+    async def _pre_save(self, db_session: AsyncSession, instance=None, **kwargs):
+        _instance = await self.pre_save(db_session, instance=instance, **kwargs)
         if _instance is not None:
             return _instance
         else:
             return instance
 
-    @classmethod
-    async def _pre_update(cls, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
-        _stmt = await cls.pre_update(db_session, stmt=stmt, **kwargs)
+    async def _pre_update(self, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
+        _stmt = await self.pre_update(db_session, stmt=stmt, **kwargs)
         if _stmt is not None:
             return _stmt
         else:
             return stmt
 
-    @classmethod
-    async def _pre_delete(cls, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
-        _stmt = await cls.pre_delete(db_session, stmt=stmt, **kwargs)
+    async def _pre_delete(self, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
+        _stmt = await self.pre_delete(db_session, stmt=stmt, **kwargs)
         if _stmt is not None:
             return _stmt
         else:
             return stmt
 
-    @classmethod
-    async def pre_save(cls, db_session: AsyncSession, instance, **kwargs):
+    async def pre_save(self, db_session: AsyncSession, **kwargs):
         pass
 
-    @classmethod
-    async def pre_update(cls, db_session: AsyncSession, stmt=None, **kwargs):
+    async def pre_update(self, db_session: AsyncSession, stmt=None, **kwargs):
         pass
 
-    @classmethod
-    async def pre_delete(cls, db_session: AsyncSession, stmt=None, **kwargs):
+    async def pre_delete(self, db_session: AsyncSession, stmt=None, **kwargs):
         pass
-
 
 
 class QueryMixin(SignalMixin):
@@ -77,18 +76,12 @@ class QueryMixin(SignalMixin):
         'iendswith': lambda column, value: column.ilike(f"%{value}"),
     }
 
-
-
-    @classmethod
-    async def apply_filter_type(cls, filter_type: str, conditions: list, column, value) -> list:
-        conditions.append(cls.condition_map.get(filter_type, lambda column, value: column == value)(column, value))
+    async def apply_filter_type(self, filter_type: str, conditions: list, column, value) -> list:
+        conditions.append(self.condition_map.get(filter_type, lambda column, value: column == value)(column, value))
         return conditions
 
 
-
-
-    @classmethod
-    def _apply_ordering(cls, stmt, order_by: Union[str, Tuple[str]]) -> None:
+    def _apply_ordering(self, stmt, order_by: Union[str, Tuple[str]]) -> None:
         if isinstance(order_by, str):
             order_by = (order_by,)
 
@@ -99,7 +92,7 @@ class QueryMixin(SignalMixin):
                 descending = True
                 column_name = column_name[1:]
 
-            column = getattr(cls, column_name)
+            column = getattr(self.cls, column_name)
             if descending:
                 column = column.desc()
             else:
@@ -112,9 +105,8 @@ class QueryMixin(SignalMixin):
 
 
 
-    @classmethod
-    async def _build_query(cls, joins=None, order_by=None, skip:int=None, limit:int=None, **kwargs) -> TypedReturnsRows:
-        stmt = select(cls)
+    async def _build_query(self, db_session: AsyncSession, joins=None, order_by=None, skip:int=None, limit:int=None, distinct_fields=None, values_fields=None, **kwargs) -> TypedReturnsRows:
+        stmt = select(self.cls)
 
         if joins is None:
             joins = []
@@ -124,31 +116,30 @@ class QueryMixin(SignalMixin):
 
         conditions = []
         for key, value in kwargs.items():
-            
+
             filter_parts = key.split('__')
             column_name = filter_parts[0]
             filter_type = filter_parts[1] if len(filter_parts) > 1 else None
-            
+
             related_model = next((join_model for join_model in joins if join_model.__name__.lower() == column_name.lower()), None)
             if related_model is None and column_name:
-                if hasattr(cls, column_name):
-                    related_model = cls
+                if hasattr(self.cls, column_name):
+                    related_model = self.cls
 
-            
             if related_model is not None:
                 filter_field = next((column_name for obj in filter_parts if hasattr(related_model, obj)), None)
                 if filter_field == None:
-                    raise ValueError("This Column does exists")
+                    raise ValueError("This Column does not exist")
                 column = getattr(related_model, filter_field)
-                conditions = await cls.apply_filter_type(filter_type, conditions, column, value)
-
+                conditions = await self.apply_filter_type(filter_type, conditions, column, value)
 
         if conditions:
             stmt = stmt.where(and_(*conditions))
 
         if order_by:
-            stmt = cls._apply_ordering(stmt, order_by)
-        
+            stmt = self._apply_ordering(stmt, order_by)
+            stmt = self._apply_distinct(stmt, distinct_fields)
+
         if skip:
             stmt = stmt.offset(skip)
 
@@ -157,98 +148,120 @@ class QueryMixin(SignalMixin):
 
         return stmt
 
-    
-
-
-    @classmethod
-    async def build_handler(cls, joins=None, order_by=None, skip: int = 0, limit: int = 20, **kwargs) -> TypedReturnsRows:
-        cached_query = await cls._build_query(joins, skip=skip, limit=limit, **kwargs)
+    async def build_handler(self, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, distinct_fields=None, values_fields=None, **kwargs) -> TypedReturnsRows:
+        cached_query = await self._build_query(db_session, joins, skip=skip, limit=limit, order_by=order_by, distinct_fields=distinct_fields, values_fields=values_fields, **kwargs)
         return cached_query
 
-
-    @classmethod
-    async def get(cls, db_session: AsyncSession, joins=None, order_by=None, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
-        stmt = await cls.build_handler(joins=joins, order_by=order_by, **kwargs)
+    async def get(self, db_session: AsyncSession, joins=None, order_by=None, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
+        stmt = await self.build_handler(db_session, joins=joins, order_by=order_by, **kwargs)
         result = await db_session.execute(stmt)
         instance = result.scalars().first()
         return instance
 
-    @classmethod
-    async def filter(cls, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, get_count=False, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
-        stmt = await cls.build_handler(joins=joins, order_by=order_by, skip=skip, limit=limit, **kwargs)
+
+    async def filter(self, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, get_count=False, 
+                    values_fields:list = [], **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
+
+        stmt = await self.build_handler(db_session, joins=joins, order_by=order_by, skip=skip, limit=limit, **kwargs)
+
+        if values_fields:
+            columns = [getattr(self.cls, field) for field in values_fields]
+            stmt = stmt.with_only_columns(*columns)
+
         result = await db_session.execute(stmt)
         instances = result.scalars().all()
 
         if not get_count:
             return instances
-        
+
         else:
-            stmt = await cls.build_handler(joins=joins, order_by=order_by, **kwargs)
-            count = await cls.count(db_session, stmt)
+            stmt = await self.build_handler(db_session, joins=joins, order_by=order_by, **kwargs)
+            count = await self.count(db_session, stmt)
             return (instances, count)
 
 
-    @classmethod
-    async def count(cls, db_session: AsyncSession, stmt) -> int:
-        stmt = stmt.with_only_columns(func.count(cls.id))
+
+
+    async def count(self, db_session: AsyncSession, stmt) -> int:
+        stmt = stmt.with_only_columns(func.count(self.cls.id))
         result = await db_session.execute(stmt)
         return result.scalar()
 
-    @classmethod
-    async def create(cls, db_session: AsyncSession, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
-        instance = cls(**kwargs)
-        instance = await cls._pre_save(db_session, instance, **kwargs)
+    async def create(self, db_session: AsyncSession, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
+        instance = self.cls(**kwargs)
+        # instance = await self._pre_save(db_session, instance, **kwargs)
         try:
             db_session.add(instance)
             await db_session.flush()
             await db_session.commit()
         except Exception as e:
             await db_session.rollback()
+            print(self.cls)
             raise e
         return instance
 
+    async def all(self, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, get_count=False) -> Union[Type[Any], Type["QueryMixin"]]:
+        return await self.filter(db_session, joins, order_by=None, skip=0, limit=None)
 
-
-    @classmethod
-    async def all(cls, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, get_count=False) -> Union[Type[Any], Type["QueryMixin"]]:
-        return await cls.filter(db_session, joins, order_by=None, skip=0, limit=None)
-
-
-
-    @classmethod
-    async def delete(cls, db_session: AsyncSession, joins=None, **kwargs) -> int:
-        stmt = await cls.build_handler(joins=joins, **kwargs)
-        stmt = await cls._pre_delete(db_session, stmt, **kwargs)
-        delete_stmt = sqla_delete(cls).where(stmt.whereclause)
+    async def delete(self, db_session: AsyncSession, joins=None, **kwargs) -> int:
+        stmt = await self.build_handler(db_session=db_session, joins=joins, **kwargs)
+        stmt = await self._pre_delete(db_session, stmt, **kwargs)
+        delete_stmt = sqla_delete(self.cls).where(stmt.whereclause)
         result = await db_session.execute(delete_stmt)
         await db_session.commit()
         return result.rowcount
 
-
-
-    @classmethod
-    async def update(cls, db_session: AsyncSession, data: dict, joins=None, **kwargs) -> int:
-        stmt = await cls.build_handler(joins=joins, **kwargs)
-        stmt = await cls._pre_update(db_session, stmt,  **kwargs)
-        update_stmt = sqla_update(cls).where(stmt.whereclause).values(data)
+    async def update(self, db_session: AsyncSession, data: dict, joins=None, **kwargs) -> int:
+        stmt = await self.build_handler(joins=joins, **kwargs)
+        stmt = await self._pre_update(db_session, stmt,  **kwargs)
+        update_stmt = sqla_update(self.cls).where(stmt.whereclause).values(data)
         result = await db_session.execute(update_stmt)
         await db_session.commit()
         if result.rowcount == 1:
-            updated_instance = await cls.get(db_session, **kwargs)
+            updated_instance = await self.get(db_session, **kwargs)
             return updated_instance
-        
         else:
             return result.rowcount or None
 
-
-    @classmethod
-    async def aggregate(cls, db_session: AsyncSession, field: str, agg_func: str = "sum", joins=None, **kwargs) -> Union[int, float, None]:
+    async def aggregate(self, db_session: AsyncSession, field: str, agg_func: str = "sum", joins=None, **kwargs) -> Union[int, float, None]:
         if agg_func.lower() == "sum":
-            aggregation = func.sum(getattr(cls, field))
+            aggregation = func.sum(getattr(self.cls, field))
         else:
             raise NotImplementedError(f"Unsupported aggregation function '{agg_func}'")
 
-        stmt = await cls.build_handler(joins=joins, **kwargs)
-        stmt = stmt.select_from(cls).with_only_columns(aggregation)
+        stmt = await self.build_handler(joins=joins, **kwargs)
+        stmt = stmt.select_from(self.cls).with_only_columns(aggregation)
         result = await db_session.execute(stmt)
         return result.scalar()
+        
+
+
+    async def exclude(self, db_session: AsyncSession, joins=None, order_by=None, skip: int = 0, limit: int = 20, get_count=False, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
+        all_stmt = await self.build_handler(db_session=db_session, joins=joins, order_by=order_by, skip=skip, limit=limit)
+        all_result = await db_session.execute(all_stmt)
+        all_instances = all_result.scalars().all()
+        
+        exclude_stmt = await self.build_handler(db_session=db_session, joins=joins, order_by=order_by, skip=skip, limit=limit, **kwargs)    
+        exclude_result = await db_session.execute(exclude_stmt)
+        exclude_instances = exclude_result.scalars().all()
+        
+        instances = list(set(all_instances) - set(exclude_instances))
+        
+        if not get_count:
+            return instances
+        else:
+            count = len(instances)
+            return (instances, count)
+
+
+
+
+
+    def _apply_distinct(self, stmt, distinct_fields=None):
+        if distinct_fields:
+            if not isinstance(distinct_fields, (list, tuple)):
+                distinct_fields = [distinct_fields]
+
+            columns = [getattr(self.cls, field) for field in distinct_fields]
+            stmt = stmt.distinct(*columns)
+        return stmt

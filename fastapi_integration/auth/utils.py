@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import Engine
 from typing import Callable
 from ..config import FastApiConfig
-from ..queries.base import QueryMixin
+from ..queries.objects import Model
 from typing import Any
 
 credentials_exception = HTTPException(
@@ -24,7 +24,7 @@ is_not_superuser_exception = HTTPException(
 class TokenData(BaseModel):
     user_id: int
 
-def manager_get_current_user(db_engine: Engine, config: FastApiConfig, User: QueryMixin) -> Callable:
+def manager_get_current_user(db_engine: Engine, config: FastApiConfig, User: Model) -> Callable:
     async def get_current_user(
         db: AsyncSession = Depends(db_engine.get_pg_db),
         token: str = Depends(config.oauth2_scheme),
@@ -45,7 +45,7 @@ def manager_get_current_user(db_engine: Engine, config: FastApiConfig, User: Que
         if token is None:
             raise credentials_exception
 
-        user = await User.get(db_session=db, id=token_data.user_id)
+        user = await User.objects.get(db_session=db, id=token_data.user_id)
         if user is None:
             raise credentials_exception
 
@@ -53,7 +53,7 @@ def manager_get_current_user(db_engine: Engine, config: FastApiConfig, User: Que
 
     return get_current_user
 
-def manager_get_admin_user(db_engine: Engine, config: FastApiConfig, User: QueryMixin) -> Callable:
+def manager_get_admin_user(db_engine: Engine, config: FastApiConfig, User: Model) -> Callable:
     async def get_admin_user(
         db: AsyncSession = Depends(db_engine.get_pg_db),
         token: str = Depends(config.oauth2_scheme),
@@ -74,7 +74,7 @@ def manager_get_admin_user(db_engine: Engine, config: FastApiConfig, User: Query
         if token is None:
             raise credentials_exception
 
-        user = await User.get(db_session=db, id=token_data.user_id, is_admin=True)
+        user = await User.objects.get(db_session=db, id=token_data.user_id, is_admin=True)
         if user is None:
             raise is_not_superuser_exception
 

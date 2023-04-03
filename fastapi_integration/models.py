@@ -1,10 +1,10 @@
-from .queries.base import QueryMixin
+from .queries.objects import Model
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
 
-class AbstractBaseUser(QueryMixin):
+class AbstractBaseUser(Model):
     __abstract__ = True
 
     id = Column(Integer, primary_key=True, index=True)
@@ -19,7 +19,7 @@ class AbstractBaseUser(QueryMixin):
 
 
 
-class AbstractOAuth2User(QueryMixin):
+class AbstractOAuth2User(Model):
     __abstract__ = True
 
     id = Column(Integer, primary_key=True, index=True)

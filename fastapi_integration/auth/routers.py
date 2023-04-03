@@ -8,10 +8,10 @@ from .schemas import AuthModel, UserOut
 from ..common import Status
 from ..db import Engine
 from ..config import FastApiConfig
-from ..queries.base import QueryMixin
+from ..queries.objects import Model
 
 
-def create_auth_router(db_engine: Engine, config: FastApiConfig, User: QueryMixin) -> APIRouter:
+def create_auth_router(db_engine: Engine, config: FastApiConfig, User: Model) -> APIRouter:
     auth_router = APIRouter()
     get_current_user = manager_get_current_user(db_engine, config, User)
 
@@ -20,7 +20,7 @@ def create_auth_router(db_engine: Engine, config: FastApiConfig, User: QueryMixi
         form_data: OAuth2PasswordRequestForm = Depends(),
         db_session: AsyncSession = Depends(db_engine.get_pg_db),
     ):
-        user = await User.get(db_session=db_session, email=form_data.username)
+        user = await User.objects.get(db_session=db_session, email=form_data.username)
         if not (user and pwd_context.verify(form_data.password, user.password)):
             raise HTTPException(
                 status_code=HTTP_422_UNPROCESSABLE_ENTITY,

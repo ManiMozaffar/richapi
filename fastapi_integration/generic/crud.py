@@ -5,6 +5,8 @@ from ..queries.base import QueryMixin
 from typing import Type, Union, Optional, Tuple, Generic, List, TypeVar, Any
 from urllib.parse import urlencode
 from ..config import FastApiConfig
+from queries.objects import Model
+
 
 T = TypeVar("T")
 
@@ -34,7 +36,7 @@ class BaseCRUD:
     verbose_name: str
     order_by_fields: Union[None, Tuple, str]
 
-    def __init__(self, model: Union[Type[Any], Type[QueryMixin]], in_schema: BaseModel, update_schema: BaseModel, name: str):
+    def __init__(self, model: Model, in_schema: BaseModel, update_schema: BaseModel, name: str):
         self.model = model
         self.in_schema = in_schema
         self.update_schema = update_schema
@@ -46,6 +48,7 @@ class BaseCRUD:
             return self.model.__table__.columns.keys()
         else:
             return cached_order_by_fields
+
 
     @_order_by_fields.setter
     def _order_by_fields(self, value):
@@ -80,12 +83,12 @@ class ConstructorMixin:
 class CRUD(BaseCRUD, ConstructorMixin):
     async def create(self, db_session: AsyncSession, data: dict):
         await self.pre_save_check(db_session, data)
-        instance = await self.model.create(db_session=db_session, **data)
+        instance = await self.model.objects.create(db_session=db_session, **data)
         return instance
 
     async def delete(self, db_session: AsyncSession, joins=None, **kwargs):
         await self.pre_delete_check(db_session)
-        deleted_rows = await self.model.delete(db_session=db_session, joins=joins, **kwargs)
+        deleted_rows = await self.model.objects.delete(db_session=db_session, joins=joins, **kwargs)
         return deleted_rows
 
 
@@ -98,7 +101,7 @@ class CRUD(BaseCRUD, ConstructorMixin):
             else:
                 order_by = tuple(order_by.split(","))
 
-        result = await self.model.filter(db_session=db_session, joins=joins, order_by=order_by, skip=skip, limit=per_page, **kwargs)
+        result = await self.model.objects.filter(db_session=db_session, joins=joins, order_by=order_by, skip=skip, limit=per_page, **kwargs)
         return result
 
     async def paginated_read_all(self, db_session: AsyncSession, query_params: dict, joins=None, order_by: Optional[str] = None, base_url=None, **kwargs):
@@ -125,7 +128,7 @@ class CRUD(BaseCRUD, ConstructorMixin):
 
 
     async def read_single(self, db_session: AsyncSession, joins=None, **kwargs):
-        result = await self.model.get(db_session=db_session, joins=joins, **kwargs)
+        result = await self.model.objects.get(db_session=db_session, joins=joins, **kwargs)
         if not result:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                 detail=f"{self.verbose_name} with the specified filters is not found")
@@ -133,7 +136,7 @@ class CRUD(BaseCRUD, ConstructorMixin):
 
     async def update(self, db_session: AsyncSession, data: dict, joins=None, **kwargs):
         await self.pre_update_check(db_session, data)
-        updated_instance = await self.model.update(db_session=db_session, data=data, joins=None, **kwargs)
+        updated_instance = await self.model.objects.update(db_session=db_session, data=data, joins=None, **kwargs)
         if updated_instance is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                 detail=f"{self.verbose_name} with the specified filters is not found")
