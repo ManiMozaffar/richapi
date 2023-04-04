@@ -111,9 +111,6 @@ class TestQueryMixin(unittest.IsolatedAsyncioTestCase):
             await Model4.objects.delete(session, id=model3.id)
 
 
-
-
-
     async def test_aggregations(self):
         async with db_engine.get_pg_db_with_async() as session:
             model1 = await Model1.objects.create(session, name="Test1")

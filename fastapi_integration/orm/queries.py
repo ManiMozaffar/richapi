@@ -249,3 +249,24 @@ class QueryMixin(BaseQuery, SignalMixin):
             instance = await self.create(db_session, **create_data)
             created = True
         return instance, created
+
+
+    async def bulk_create(self, db_session: AsyncSession, instances_data: list) -> list:
+        """
+        Create multiple instances in a single bulk operation.
+        :param db_session: The async database session.
+        :param instances_data: A list of dictionaries containing the data for the new instances.
+        :return: A list of created instances.
+        """
+        instances = [self.cls(**data) for data in instances_data]
+
+        try:
+            db_session.add_all(instances)
+            await db_session.flush()
+            await db_session.commit()
+        except Exception as e:
+            await db_session.rollback()
+            raise e
+
+        return instances
+
