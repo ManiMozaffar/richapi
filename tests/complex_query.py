@@ -9,7 +9,6 @@ import random, string, unittest
 from fastapi_integration.models import AbstractModel
 from sqlalchemy import Column, Integer, String, ForeignKey, Table
 from sqlalchemy.orm import relationship
-from sqlalchemy import text
 import time
 from sqlalchemy import select
 from statistics import mean
@@ -97,6 +96,54 @@ class TestQueryMixin(unittest.IsolatedAsyncioTestCase):
 
 
 
+
+    async def test_distinct(self):
+        async with db_engine.get_pg_db_with_async() as session:
+            model1 = await Model4.objects.create(session, name="Test5")
+            model2 = await Model4.objects.create(session, name="Test6")
+            model3 = await Model4.objects.create(session, name="Test5")
+
+            distinct_query = await Model4.objects.filter(session, distinct_fields=["name"], order_by="name")
+            self.assertEqual(len(distinct_query), 2)
+
+            await Model4.objects.delete(session, id=model1.id)
+            await Model4.objects.delete(session, id=model2.id)
+            await Model4.objects.delete(session, id=model3.id)
+
+
+
+
+
+    async def test_aggregations(self):
+        async with db_engine.get_pg_db_with_async() as session:
+            model1 = await Model1.objects.create(session, name="Test1")
+            model2 = await Model1.objects.create(session, name="Test2")
+            model3 = await Model1.objects.create(session, name="Test3")
+
+            sum_query = await Model1.objects.aggregate(session, field="id", agg_func="sum")
+            self.assertEqual(sum_query, model1.id + model2.id + model3.id)
+
+            min_query = await Model1.objects.aggregate(session, field="id", agg_func="min")
+            self.assertEqual(min_query, min(model1.id, model2.id, model3.id))
+
+            max_query = await Model1.objects.aggregate(session, field="id", agg_func="max")
+            self.assertEqual(max_query, max(model1.id, model2.id, model3.id))
+
+            count_query = await Model1.objects.aggregate(session, field="id", agg_func="count")
+            self.assertEqual(count_query, 3)
+
+            avg_query = await Model1.objects.aggregate(session, field="id", agg_func="avg")
+            self.assertEqual(avg_query, mean([model1.id, model2.id, model3.id]))
+
+            await Model1.objects.delete(session, id=model1.id)
+            await Model1.objects.delete(session, id=model2.id)
+            await Model1.objects.delete(session, id=model3.id)
+
+
+
+
+
+
     async def test_where_and_join_and_selects_and_m2m(self):        
         async with db_engine.get_pg_db_with_async() as session:
             random_char = ''.join(random.choices(string.ascii_letters + string.digits, k=9))
@@ -160,7 +207,7 @@ if __name__ == "__main__":
     class Model1(AbstractModel, Base):
         __tablename__ = 'model1'
         id = Column(Integer, primary_key=True, index=True)
-        name = Column(String(50), unique=True, index=True)
+        name = Column(String(50), nullable=True)
 
         model2s = relationship("Model2", secondary=association_table, back_populates="model1s")
         model3s = relationship("Model3", back_populates="model1")
@@ -170,7 +217,7 @@ if __name__ == "__main__":
     class Model2(AbstractModel, Base):
         __tablename__ = 'model2'
         id = Column(Integer, primary_key=True, index=True)
-        name = Column(String(50), unique=True, index=True)
+        name = Column(String(50), nullable=True)
 
         model1s = relationship("Model1", secondary=association_table, back_populates="model2s")
     
@@ -179,11 +226,16 @@ if __name__ == "__main__":
     class Model3(AbstractModel, Base):
         __tablename__ = 'model3'
         id = Column(Integer, primary_key=True, index=True)
-        name = Column(String(50), unique=True, index=True)
+        name = Column(String(50), nullable=True)
         model1_id = Column(Integer, ForeignKey('model1.id'))
         model1 = relationship("Model1", back_populates="model3s")
 
 
+
+    class Model4(AbstractModel, Base):
+        __tablename__ = 'model4'
+        id = Column(Integer, primary_key=True, index=True)
+        name = Column(String(50), nullable=True)
 
 
     db_engine = Engine(MyConfig())

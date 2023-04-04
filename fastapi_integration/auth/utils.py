@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import Engine
 from typing import Callable
 from ..config import FastApiConfig
-from ..queries.objects import Model
+from ..orm.models import AbstractModel
 from typing import Any
 
 credentials_exception = HTTPException(
@@ -24,7 +24,7 @@ is_not_superuser_exception = HTTPException(
 class TokenData(BaseModel):
     user_id: int
 
-def manager_get_current_user(db_engine: Engine, config: FastApiConfig, User: Model) -> Callable:
+def manager_get_current_user(db_engine: Engine, config: FastApiConfig, User: AbstractModel) -> Callable:
     async def get_current_user(
         db: AsyncSession = Depends(db_engine.get_pg_db),
         token: str = Depends(config.oauth2_scheme),
@@ -53,7 +53,7 @@ def manager_get_current_user(db_engine: Engine, config: FastApiConfig, User: Mod
 
     return get_current_user
 
-def manager_get_admin_user(db_engine: Engine, config: FastApiConfig, User: Model) -> Callable:
+def manager_get_admin_user(db_engine: Engine, config: FastApiConfig, User: AbstractModel) -> Callable:
     async def get_admin_user(
         db: AsyncSession = Depends(db_engine.get_pg_db),
         token: str = Depends(config.oauth2_scheme),

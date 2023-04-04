@@ -1,93 +1,18 @@
 from sqlalchemy import (
     select,
-    and_,
     delete as sqla_delete,
-    Column,
-    Integer,
-    String,
     update as sqla_update,
 )
-from sqlalchemy.sql.selectable import Self, TypedReturnsRows
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Type, Union, Tuple, Any
-from sqlalchemy import func, or_
-import logging
+from sqlalchemy import func
 from sqlalchemy.orm import RelationshipProperty
-from .utils import has_endpoint
+from .signals import SignalMixin
+from .base import BaseQuery
 
 
-class BaseQuery:
-    _instance = None
 
-    def __init__(self, cls):
-        self.cls = cls
-
-
-    @property
-    def instance(self):
-        return self._instance
-    
-    @instance.setter
-    def instance(self, value):
-        return setattr(self, '_instance', value)
-
-
-class SignalMixin(BaseQuery):
-
-    async def _pre_save(self, db_session: AsyncSession, instance=None, **kwargs):
-        _instance = await self.pre_save(db_session, instance=instance, **kwargs)
-        if _instance is not None:
-            return _instance
-        else:
-            return instance
-
-    async def _pre_update(self, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
-        _stmt = await self.pre_update(db_session, stmt=stmt, **kwargs)
-        if _stmt is not None:
-            return _stmt
-        else:
-            return stmt
-
-    async def _pre_delete(self, db_session: AsyncSession, stmt=None, **kwargs) -> TypedReturnsRows:
-        _stmt = await self.pre_delete(db_session, stmt=stmt, **kwargs)
-        if _stmt is not None:
-            return _stmt
-        else:
-            return stmt
-
-    async def pre_save(self, db_session: AsyncSession, **kwargs):
-        pass
-
-    async def pre_update(self, db_session: AsyncSession, stmt=None, **kwargs):
-        pass
-
-    async def pre_delete(self, db_session: AsyncSession, stmt=None, **kwargs):
-        pass
-
-
-class QueryMixin(SignalMixin):
-    condition_map = {
-        'exact': lambda column, value: column == value,
-        'contains': lambda column, value: column.contains(value),
-        'in': lambda column, value: column.in_(value),
-        'gt': lambda column, value: column > value,
-        'gte': lambda column, value: column >= value,
-        'lt': lambda column, value: column < value,
-        'lte': lambda column, value: column <= value,
-        'startswith': lambda column, value: column.startswith(value),
-        'endswith': lambda column, value: column.endswith(value),
-        'range': lambda column, value: column.between(value[0], value[1]),
-        'date': lambda column, value: func.date(column) == value,
-        'year': lambda column, value: func.extract('year', column) == value,
-        'month': lambda column, value: func.extract('month', column) == value,
-        'day': lambda column, value: func.extract('day', column) == value,
-
-        'iexact': lambda column, value: column.ilike(value),
-        'icontains': lambda column, value: column.ilike(f"%{value}%"),
-        'istartswith': lambda column, value: column.ilike(f"{value}%"),
-        'iendswith': lambda column, value: column.ilike(f"%{value}"),
-    }
-
+class QueryMixin(BaseQuery, SignalMixin):
     async def apply_filter_type(self, filter_type: str, conditions: list, column, value) -> list:
         conditions.append(self.condition_map.get(filter_type, lambda column, value: column == value)(column, value))
         return conditions
@@ -106,86 +31,6 @@ class QueryMixin(SignalMixin):
 
 
     
-    async def _build_query(self, db_session: AsyncSession, joins: set = set(), order_by=None, skip: int = None, limit: int = None, distinct_fields=None, where=None, select_models=None, **kwargs) -> TypedReturnsRows:
-        """
-        Build a basic query for the current model.
-        :param db_session: The async database session.
-        :return: A query object.
-        """
-        joint = list()
-        if select_models is not None:
-            stmt = select(*select_models, self.cls).select_from(self.cls)
-            self.needs_scalar = False
-        else:
-            stmt = select(self.cls)
-            self.needs_scalar = True
-
-
-        if where is not None:
-            stmt = stmt.where(*where)
-
-
-
-        for join_condition in joins:
-            related_model = join_condition.left.table if join_condition.left.table != self.cls.__table__ else join_condition.right.table
-            stmt = stmt.join(related_model, join_condition)
-            joint.append(related_model)
-
-
-        conditions = []
-        for key, value in kwargs.items():
-            filter_parts = key.split('__')
-            column_name = filter_parts[0]
-            filter_type = filter_parts[-1] if len(filter_parts) > 1 else None
-
-            if column_name and hasattr(self.cls, column_name):
-                if isinstance((getattr(self.cls, column_name).property), RelationshipProperty):
-                    parent_cls = getattr(self.cls, column_name).property.mapper.class_
-                    if parent_cls not in joint:
-                        stmt = stmt.join(parent_cls)
-                        joint.append(parent_cls)
-                else:
-                    parent_cls = self.cls
-
-
-                filter_field = next((obj for obj in filter_parts if hasattr(parent_cls, obj)), None)
-                if filter_field is None:
-                    raise ValueError("This Column does not exist")
-                column = getattr(parent_cls, filter_field)
-                conditions = await self.apply_filter_type(filter_type, conditions, column, value)
-
-    
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-
-
-        if order_by:
-            stmt = self._apply_ordering(stmt, order_by)
-            stmt = self._apply_distinct(stmt, distinct_fields)
-
-        if skip:
-            stmt = stmt.offset(skip)
-
-        if limit:
-            stmt = stmt.limit(limit)
-
-        return stmt
-
-
-    async def build_handler(self, db_session: AsyncSession, joins=set(), order_by=None, skip: int = 0, limit: int = 20, distinct_fields=None,  where=None, 
-                            select_models=None, **kwargs) -> TypedReturnsRows:
-        """
-        Build a query handler with the given filters.
-
-        :param db_session: The async database session.
-        :param kwargs: Filters for the query.
-        :return: A query handler.
-        """
-        cached_query = await self._build_query(db_session, joins, skip=skip, limit=limit, order_by=order_by, distinct_fields=distinct_fields,  where=where, 
-                                               select_models=select_models, **kwargs)
-        return cached_query
-
-
 
     async def get(self, db_session: AsyncSession, joins=set(), order_by=None, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
         stmt = await self.build_handler(db_session, joins=joins, order_by=order_by, **kwargs)
@@ -313,7 +158,7 @@ class QueryMixin(SignalMixin):
         aggregation = supported_agg_funcs[agg_func.lower()](getattr(self.cls, field))
         stmt = select(aggregation)
 
-        stmt = await self.build_handler(joins=joins, **kwargs)
+        stmt = await self.build_handler(db_session, joins=joins, **kwargs)
         stmt = stmt.select_from(self.cls).with_only_columns(aggregation)
         result = await db_session.execute(stmt)
         return result.scalar()
@@ -350,23 +195,21 @@ class QueryMixin(SignalMixin):
 
 
 
-    async def add_m2m(self, db_session: AsyncSession, model2) -> None:
+    async def add_m2m(self, db_session: AsyncSession, other_model) -> None:
         """
-        Add a many-to-many relationship between two entities.
-
+        Add a many-to-many relationship between two entities.d
         :param db_session: The async database session.
-        :param model1: The first entity in the relationship.
-        :param model2: The second entity in the relationship.
+        :param other_model: The entity in the relationship.
         :return: None
         """
         if self.instance is None:
             raise ValueError("Perform a query before using add_m2m method")
         for attr, value in self.instance.__class__.__dict__.items():
-            if isinstance(value, RelationshipProperty) and value.argument == model2.__class__.__name__:
-                getattr(self.instance, attr).append(model2)
-        for attr, value in model2.__class__.__dict__.items():
+            if isinstance(value, RelationshipProperty) and value.argument == other_model.__class__.__name__:
+                getattr(self.instance, attr).append(other_model)
+        for attr, value in other_model.__class__.__dict__.items():
             if isinstance(value, RelationshipProperty) and value.argument == self.instance.__class__.__name__:
-                getattr(model2, attr).append(self.instance)
+                getattr(other_model, attr).append(self.instance)
 
         await db_session.commit()
 
@@ -380,10 +223,29 @@ class QueryMixin(SignalMixin):
         :param stmt: The SQL statement to modify.
         :return: None
         """
-        if distinct_fields:
-            if not isinstance(distinct_fields, (list, tuple)):
-                distinct_fields = [distinct_fields]
 
-            columns = [getattr(self.cls, field) for field in distinct_fields]
-            stmt = stmt.distinct(*columns)
+        if distinct_fields is not None:
+            if isinstance(distinct_fields, (list, tuple)):
+                columns = [getattr(self.cls, field) for field in distinct_fields]
+                stmt = stmt.distinct(*columns)
+            else:
+                raise ValueError("distinct_fields should be a list or tuple of field names.")
         return stmt
+
+
+
+    async def get_or_create(self, db_session: AsyncSession, create_data: dict, **kwargs) -> Tuple[Union[Type[Any], Type["QueryMixin"]], bool]:
+        """
+        Retrieve an instance if it exists, otherwise create a new one with the given data.
+
+        :param db_session: The async database session.
+        :param create_data: A dictionary containing the data for the new instance.
+        :param kwargs: Filters for the query.
+        :return: A tuple containing the instance and a boolean indicating if the instance was created.
+        """
+        instance = await self.get(db_session, **kwargs)
+        created = False
+        if not instance:
+            instance = await self.create(db_session, **create_data)
+            created = True
+        return instance, created

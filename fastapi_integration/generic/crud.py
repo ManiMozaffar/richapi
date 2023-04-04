@@ -1,11 +1,10 @@
 from pydantic import BaseModel, HttpUrl, Field
 from fastapi import HTTPException, status, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..queries.base import QueryMixin
-from typing import Type, Union, Optional, Tuple, Generic, List, TypeVar, Any
+from ..orm.models import AbstractModel
+from typing import Union, Optional, Tuple, Generic, List, TypeVar, Any
 from urllib.parse import urlencode
 from ..config import FastApiConfig
-from queries.objects import Model
 
 
 T = TypeVar("T")
@@ -36,7 +35,7 @@ class BaseCRUD:
     verbose_name: str
     order_by_fields: Union[None, Tuple, str]
 
-    def __init__(self, model: Model, in_schema: BaseModel, update_schema: BaseModel, name: str):
+    def __init__(self, model: AbstractModel, in_schema: BaseModel, update_schema: BaseModel, name: str):
         self.model = model
         self.in_schema = in_schema
         self.update_schema = update_schema

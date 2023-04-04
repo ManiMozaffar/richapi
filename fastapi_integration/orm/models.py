@@ -1,9 +1,8 @@
-from .base import QueryMixin
-from typing import Type
+from .queries import QueryMixin
 
 
-class Model:
-
+class AbstractModel:
+    __abstract__ = True
     _query_mixin_instance = None
 
     @classmethod

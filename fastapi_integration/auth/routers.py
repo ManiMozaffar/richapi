@@ -8,10 +8,10 @@ from .schemas import AuthModel, UserOut
 from ..common import Status
 from ..db import Engine
 from ..config import FastApiConfig
-from ..queries.objects import Model
+from ..orm.models import AbstractModel
 
 
-def create_auth_router(db_engine: Engine, config: FastApiConfig, User: Model) -> APIRouter:
+def create_auth_router(db_engine: Engine, config: FastApiConfig, User: AbstractModel) -> APIRouter:
     auth_router = APIRouter()
     get_current_user = manager_get_current_user(db_engine, config, User)
 

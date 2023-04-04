@@ -1,9 +1,9 @@
-from .queries.objects import Model
+from .orm.models import AbstractModel
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
-class AbstractBaseUser(Model):
+class AbstractBaseUser(AbstractModel):
     __abstract__ = True
 
     id = Column(Integer, primary_key=True, index=True)
@@ -18,7 +18,7 @@ class AbstractBaseUser(Model):
 
 
 
-class AbstractOAuth2User(Model):
+class AbstractOAuth2User(AbstractModel):
     __abstract__ = True
 
     id = Column(Integer, primary_key=True, index=True)
@@ -28,7 +28,3 @@ class AbstractOAuth2User(Model):
     refresh_token = Column(String(200), unique=True, index=True)
     account_id = Column(String(30), unique=True, index=True)
     account_email = Column(String(200), unique=True, index=True)
-
-
-class AbstractModel(Model):
-    __abstract__ = True

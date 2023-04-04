@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from .db import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
 from .auth.routers import create_auth_router
-from .queries.base import QueryMixin
+from .orm.models import AbstractModel
 from sqlalchemy.orm import declarative_base
 
 
@@ -24,7 +24,7 @@ class FastAPIExtended(FastAPI):
     _routers: list = list()
     add_auth_router: bool = True
     i = 0
-    Users: QueryMixin
+    Users: AbstractModel
 
     
     
