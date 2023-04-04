@@ -81,13 +81,16 @@ class TestQueryMixin(unittest.IsolatedAsyncioTestCase):
         
 
     async def test_query_order_limit(self):
-        self.assertGreater(self.order_and_limit[0].id, self.order_and_limit[1].id)
         self.assertEqual(len(self.order_and_limit), 2)
+        self.assertGreater(self.order_and_limit[0].id, self.order_and_limit[1].id)
+        
     
 
     async def test_values(self):
         self.assertEqual(hasattr(self.values[0], 'password'), False)
     
+    
+
     
     
 

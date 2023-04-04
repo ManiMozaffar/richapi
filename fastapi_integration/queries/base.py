@@ -17,9 +17,19 @@ from .utils import has_endpoint
 
 
 class BaseQuery:
+    _instance = None
+
     def __init__(self, cls):
         self.cls = cls
 
+
+    @property
+    def instance(self):
+        return self._instance
+    
+    @instance.setter
+    def instance(self, value):
+        return setattr(self, '_instance', value)
 
 
 class SignalMixin(BaseQuery):
@@ -56,9 +66,6 @@ class SignalMixin(BaseQuery):
 
 
 class QueryMixin(SignalMixin):
-    joint:list = []
-
-
     condition_map = {
         'exact': lambda column, value: column == value,
         'contains': lambda column, value: column.contains(value),
@@ -105,6 +112,7 @@ class QueryMixin(SignalMixin):
         :param db_session: The async database session.
         :return: A query object.
         """
+        joint = list()
         if select_models is not None:
             stmt = select(*select_models, self.cls).select_from(self.cls)
             self.needs_scalar = False
@@ -121,20 +129,21 @@ class QueryMixin(SignalMixin):
         for join_condition in joins:
             related_model = join_condition.left.table if join_condition.left.table != self.cls.__table__ else join_condition.right.table
             stmt = stmt.join(related_model, join_condition)
-            self.joint.append(related_model)
+            joint.append(related_model)
 
 
         conditions = []
         for key, value in kwargs.items():
             filter_parts = key.split('__')
             column_name = filter_parts[0]
-            filter_type = filter_parts[1] if len(filter_parts) > 1 else None
+            filter_type = filter_parts[-1] if len(filter_parts) > 1 else None
 
             if column_name and hasattr(self.cls, column_name):
                 if isinstance((getattr(self.cls, column_name).property), RelationshipProperty):
                     parent_cls = getattr(self.cls, column_name).property.mapper.class_
-                    if parent_cls not in self.joint:
+                    if parent_cls not in joint:
                         stmt = stmt.join(parent_cls)
+                        joint.append(parent_cls)
                 else:
                     parent_cls = self.cls
 
@@ -146,7 +155,6 @@ class QueryMixin(SignalMixin):
                 conditions = await self.apply_filter_type(filter_type, conditions, column, value)
 
     
-
         if conditions:
             stmt = stmt.where(and_(*conditions))
 
@@ -182,13 +190,12 @@ class QueryMixin(SignalMixin):
     async def get(self, db_session: AsyncSession, joins=set(), order_by=None, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
         stmt = await self.build_handler(db_session, joins=joins, order_by=order_by, **kwargs)
         result = await db_session.execute(stmt)
-        instance = result.scalars().first()
-        return instance
+        self.instance = result.scalars().first()
+        return self.instance
 
 
     async def filter(self, db_session: AsyncSession, joins=set(), order_by=None, skip: int = 0, limit: int = 20, get_count=False, 
                     values_fields:list = [], where=None, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
-
         stmt = await self.build_handler(db_session, joins=joins, order_by=order_by, skip=skip, limit=limit, where=where, **kwargs)
 
         if values_fields:
@@ -197,17 +204,17 @@ class QueryMixin(SignalMixin):
 
         result = await db_session.execute(stmt)
         if self.needs_scalar:
-            instances = result.scalars().all()
+            self.instance = result.scalars().all()
         else:
-            instances = result.all()
+            self.instance = result.all()
 
         if not get_count:
-            return instances
+            return self.instance
 
         else:
             stmt = await self.build_handler(db_session, joins=joins, order_by=order_by, **kwargs)
             count = await self.count(db_session, stmt)
-            return (instances, count)
+            return (self.instance, count)
 
 
 
@@ -217,8 +224,9 @@ class QueryMixin(SignalMixin):
         result = await db_session.execute(stmt)
         return result.scalar()
 
+
     async def create(self, db_session: AsyncSession, **kwargs) -> Union[Type[Any], Type["QueryMixin"]]:
-        instance = self.cls()
+        self.instance = self.cls()
         for key, value in kwargs.items():
             attr = getattr(self.cls, key, None)
 
@@ -226,19 +234,20 @@ class QueryMixin(SignalMixin):
                 raise ValueError(f"Attribute '{key}' not found in class '{self.cls.__name__}'")
             if hasattr(attr, "property") and isinstance(attr.property, RelationshipProperty):
                 related_instance = value
-                setattr(instance, key, related_instance)
+                setattr(self.instance, key, related_instance)
             else:
-                setattr(instance, key, value)
+                setattr(self.instance, key, value)
 
         # instance = await self._pre_save(db_session, instance, **kwargs)
         try:
-            db_session.add(instance)
+            db_session.add(self.instance)
             await db_session.flush()
             await db_session.commit()
         except Exception as e:
             await db_session.rollback()
             raise e
-        return instance
+        return self.instance
+
 
 
     async def all(self, db_session: AsyncSession, joins=set(), order_by=None, skip: int = 0, limit: int = 20, get_count=False) -> Union[Type[Any], Type["QueryMixin"]]:
@@ -331,12 +340,35 @@ class QueryMixin(SignalMixin):
         exclude_stmt = await self.build_handler(db_session=db_session, joins=joins, order_by=order_by, skip=skip, limit=None, **kwargs)    
         exclude_result = await db_session.execute(exclude_stmt)
         exclude_instances = exclude_result.scalars().all()
-        instances = list(set(all_instances) - set(exclude_instances))
+        self.instance = list(set(all_instances) - set(exclude_instances))
         if not get_count:
-            return instances
+            return self.instance
         else:
-            count = len(instances)
-            return (instances, count)
+            count = len(self.instance)
+            return (self.instance, count)
+
+
+
+
+    async def add_m2m(self, db_session: AsyncSession, model2) -> None:
+        """
+        Add a many-to-many relationship between two entities.
+
+        :param db_session: The async database session.
+        :param model1: The first entity in the relationship.
+        :param model2: The second entity in the relationship.
+        :return: None
+        """
+        if self.instance is None:
+            raise ValueError("Perform a query before using add_m2m method")
+        for attr, value in self.instance.__class__.__dict__.items():
+            if isinstance(value, RelationshipProperty) and value.argument == model2.__class__.__name__:
+                getattr(self.instance, attr).append(model2)
+        for attr, value in model2.__class__.__dict__.items():
+            if isinstance(value, RelationshipProperty) and value.argument == self.instance.__class__.__name__:
+                getattr(model2, attr).append(self.instance)
+
+        await db_session.commit()
 
 
 

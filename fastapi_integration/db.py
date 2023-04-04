@@ -34,12 +34,13 @@ class RedisDb:
 
 
 class Engine:
-    def __init__(self, setting:FastApiConfig) -> None:
+    def __init__(self, setting:FastApiConfig, **kwagrs) -> None:
         self.setting = setting
         self.engine = create_async_engine(
             setting.database_url,
             future=True,
             echo=False,
+            **kwagrs
         )
 
         self.async_session_factory = sessionmaker(
@@ -68,6 +69,13 @@ class Engine:
         logging.info("Connection established")
 
 
+    async def drop_database(self, Base):
+        logging.info("Dropping Database")
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        logging.info("Database Dropped")
+
+
 
     @asynccontextmanager
     async def get_pg_db_with_async(self) -> AsyncSession:
@@ -81,5 +89,5 @@ class Engine:
     
 
 
-def create_engine(settings:FastApiConfig) -> Engine:
-    return Engine(settings)
+def create_engine(settings:FastApiConfig, **kwargs) -> Engine:
+    return Engine(settings, **kwargs)
