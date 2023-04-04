@@ -90,7 +90,7 @@ class FastAPIExtended(FastAPI):
 
     def create_start_app_handler(self) -> Callable:
         async def start_app() -> None:
-            self.db_engine.create_database(self.Base)
+            await self.db_engine.create_database(self.Base)
             self.db_engine.get_redis_db().test()
         return start_app
 
