@@ -12,31 +12,21 @@ pip install fastapi-integration
 
 # Features
 
-The package currently will include the following features:
+The package currently includes the following features:
 
-Pre-built models for common database tables (e.g. User, Role, etc.)
-The SQLAlchemyORM object, which makes it easy to perform common database operations using SQLAlchemy and asyncpg
-Automatic database connection management, so you don't have to worry about opening/closing connections
-Integrability with providing admin CRUD endpoints and interface
-Integrability with other packages that supports integration with sqlalchemy and pgasync
-Command Line Support
-Celery Support
+Pre-built models for common database tables (e.g., User, Role, etc.) The SQLAlchemyORM object, which makes it easy to perform common database operations using SQL Alchemy and asyncpg Automatic database connection management, so you don't have to worry about opening/closing connections Integrability with providing admin CRUD endpoints and interface Integrability with other packages that supports integration with SQL alchemy and phasic Command Line Support Celery Support
 
 
 # Why ?
 
-django allows you to write acceptable code with no studing of architecture principles. 
-It does not allow you to write good code, but it protects you from writing very bad code. In fastapi you have ability to go both ways.
-With this library, as time goes by, it will protect you to not write very bad code, however you can still bypass all these protections, and write your own code if you know what you are up to.
+Django allows you to write acceptable code with no studding of architecture principles. It does not allow you to write good code, but it protects you from writing very bad code. In FastAPI you have ability to go both ways. With this library, as time goes by, it will protect you to not write very bad code, however you can still bypass all these protections, and write your own code if you know what you are up to.
 
-So if you're more of a beginner in web development and you have no good fundamental of architecture principles, then here you are. 
+So, if you're more of a beginner in web development and you have no good fundamental of architecture principles, then here you are.
 
 
 # Why not using Tortoise ORM?
-Although Tortoise ORM is a great option for ORM, this particular repository is not solely focused on providing an ORM solution. Instead, it aims to introduce beginners to SQLAlchemy and its concepts. Although the code would look different from the SQLAlchemy, the core concept of querying the database remains the same, which still uses SQLAlchemy
-syntax.
-Another thing is that Tortoise is new born ORM, it is impossible to query the below code using Tortoise ORM.
-This approach of introducing beginners to SQLAlchemy and providing the flexibility to use more advanced statements directly from SQLAlchemy is what makes this repository unique. It does not limit the developers to another new-born ORM and allows them to use SQLAlchemy alongside the translated ORM, all while following the best practices of FastAPI.
+Although Tortoise ORM is a great option for ORM, this repository is not solely focused on providing an ORM solution. Instead, it aims to introduce beginners to SQL Alchemy and its concepts. Although the code would look different from the SQL Alchemy, the core concept of querying the database remains the same, which still uses SQL Alchemy syntax. Another thing is that Tortoise is newborn ORM, it is impossible to query the code below using Tortoise ORM.
+This approach of introducing beginners to SQL Alchemy and providing the flexibility to use more advanced statements directly from SQL Alchemy is what makes this repository unique. It does not limit the developers to another new-born ORM and allows them to use SQL Alchemy alongside the translated ORM, all while following the best practices of Fast API.
 
 
 ```python
@@ -113,9 +103,7 @@ if __name__ == "__main__":
 ```
 
 
-Or you can use the translated version of SQLAlchemy to django ORM.
-You can check tests folder for more information to see how ORM translation works.
-Here are just some examples, they're not really following the best practices
+Or you can use the translated version of SQL Alchemy to Django ORM. You can check the tests folder for more information to see how ORM translation works. Here are just some examples, they're not really following the best practices.
 
 ```python
 from fastapi_integration.models import AbstractModel
