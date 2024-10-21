@@ -102,10 +102,10 @@ def _find_explicit_expection_recursively(
         return []
 
     module = inspect.getmodule(func_obj)
-    if is_stdlib(module.__name__):
+    if module and is_stdlib(module.__name__):
         return []
 
-    if to_filter_predicate(module.__name__) is False:
+    if module and to_filter_predicate(module.__name__) is False:
         return []
 
     finder = ExceptionFinder(func_obj, to_filter_predicate)
