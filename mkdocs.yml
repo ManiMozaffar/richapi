@@ -1,0 +1,105 @@
+site_name: RichAPI
+site_description: Find HTTPExceptions and turn them into documented responses! 🎉
+repo_url: https://github.com/ManiMozaffar/richapi
+site_url: https://ManiMozaffar.github.io/richapi
+site_author: Mani Mozaffar
+repo_name: ManiMozaffar/richapi
+copyright: Maintained by <a href="https://ManiMozaffar.com">Mani Mozaffar</a>.
+
+theme:
+  name: "material"
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/link
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch-off
+        name: Switch to system preference
+
+  features:
+    - navigation.tabs
+    - navigation.instant
+    - content.code.annotate
+    - content.tabs.link
+    - content.code.copy
+    - announce.dismiss
+    - search.suggest
+    - search.highlight
+  # logo: assets/logo-white.svg
+  # favicon: assets/favicon.png
+
+edit_uri: ""
+
+# https://www.mkdocs.org/user-guide/configuration/#validation
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+
+extra:
+  navigation:
+    next: true
+    previous: true
+
+extra_css:
+  - "extra/tweaks.css"
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - admonition
+  - pymdownx.details
+  - pymdownx.extra
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - attr_list
+  - mdx_truly_sane_lists
+  - md_in_html
+
+watch:
+  - richapi
+plugins:
+  - mike:
+      alias_type: symlink
+      canonical_version: latest
+  - search:
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - richapi
+          options:
+            members_order: source
+            separate_signature: true
+            docstring_options:
+              ignore_init_summary: true
+            merge_init_into_class: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+
+  - mkdocs-simple-hooks:
+      hooks:
+        on_pre_build: "docs.plugins:on_pre_build"
+        on_files: "docs.plugins:on_files"
+        on_page_markdown: "docs.plugins:on_page_markdown"
+
+nav:
+  - Documentation:
+      - Welcome: index.md
+      - Conventions: conventions.md
+      - Advance Usage: advance.md

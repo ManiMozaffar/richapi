@@ -1,0 +1,24 @@
+name: Deploy Docs On Demand
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-docs-on-demand:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: yezz123/setup-uv@v4
+
+      - name: Setup python ${{ matrix.python-version }} and uv
+        shell: bash
+        run: |
+          uv sync --frozen
+
+      - name: Deploy documentation
+        run: uv run python deploy_docs.py

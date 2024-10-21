@@ -1,19 +1,17 @@
 [project]
 name = "richapi"
 version = "0.1.0"
-description = "A simple and lightweight object mapper around SQLAlchemy core."
+description = "Find HTTPExceptions and turn them into documented responses!"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = [
-    "loguru>=0.7.2",
-]
+dependencies = ["loguru>=0.7.2", "typer>=0.12.5"]
 license = 'MIT'
 
-# [project.urls]
-# repository = "https://github.com/ManiMozaffar/naked-sqla"
-# Homepage = 'https://github.com/ManiMozaffar/naked-sqla'
-# Documentation = 'https://github.com/ManiMozaffar/naked-sqla'
-# Source = 'https://github.com/ManiMozaffar/naked-sqla'
+[project.urls]
+repository = "https://github.com/ManiMozaffar/richapi"
+Homepage = 'https://github.com/ManiMozaffar/richapi'
+Documentation = 'https://github.com/ManiMozaffar/richapi'
+Source = 'https://github.com/ManiMozaffar/richapi'
 
 [build-system]
 requires = ["hatchling"]
@@ -51,7 +49,12 @@ dev-dependencies = [
     "mike==2.0.0",
     "psutil>=6.0.0",
     "tox>=4.21.2",
+    "uvicorn>=0.31.1",
+    "httpx>=0.27.2",
 ]
 
 [tool.behavior]
 use-uv = true
+
+[project.scripts]
+richapi = "richapi.cli:app"
