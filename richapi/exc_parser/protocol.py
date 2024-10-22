@@ -27,21 +27,25 @@ class BaseHTTPException(HTTPException):
     @classmethod
     def get_json_schema(cls) -> HTTPExceptionSchema:
         value = _generic_json_schema_builder(cls)
-        assert (
-            value is not None
-        )  # should never happen because status code is always set
+        assert value is not None  # should never happen because status code is always set
         return value
 
 
 def try_to_camel_case(string: str) -> str:
-    if " " in string:  # with space
+    final_str = string
+    if " " in final_str:  # with space
         components = string.split(" ")
-        return components[0] + "".join(x.title() for x in components[1:])
-    elif "_" in string:  # snake case
+        final_str = components[0] + "".join(x.title() for x in components[1:])
+
+    if "_" in final_str:  # snake case
         components = string.split("_")
-        return components[0] + "".join(x.title() for x in components[1:])
-    else:
-        return string  # not known
+        final_str = components[0] + "".join(x.title() for x in components[1:])
+
+    if "-" in final_str:  # kebab case
+        components = string.split("-")
+        final_str = components[0] + "".join(x.title() for x in components[1:])
+
+    return final_str
 
 
 def _generic_json_schema_builder(
