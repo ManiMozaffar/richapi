@@ -103,3 +103,4 @@ nav:
       - Welcome: index.md
       - Conventions: conventions.md
       - Advance Usage: advance.md
+      - Implemenetion Detail: implementation.md

@@ -34,3 +34,21 @@ class YourException(BaseHTTPException):
 ```
 
 Remember that the responsbility of raising and returning the correct data on FastAPI is not library responsibility, but the responsibility of the developer. The library is only responsible for generating the OpenAPI schema by looking at the functions and classes that are raising exceptions.
+
+### Finding exceptions in other modules
+
+By default, the library only looks at the FastAPI app module to search for exceptions.
+This is to avoid parsing countless dependency modules that are not related to the FastAPI app.
+But sometimes you may be using some other libraries that raises HTTPExceptions.
+For example using a third library for JWT authentication.
+
+In that case, you can simply pass the module name to the `parse_exceptions` function.
+
+```python
+from richapi import enrich_openapi
+from fastapi import FastAPI
+
+app = FastAPI()
+# add your routers ....
+app.openapi = enrich_openapi(app, ["your_module_name", "some-other-package"])
+```
