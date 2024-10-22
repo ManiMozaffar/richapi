@@ -72,6 +72,9 @@ def compile_openapi_from_fastapi(
         routes=app.routes,
     ),
 ) -> dict:
+    target_module = [target_module] if isinstance(target_module, str) else target_module
+    target_module.append("fastapi")
+
     openapi_schema = open_api_getter(app)
     for route in app.routes:
         if not isinstance(route, APIRoute):
@@ -209,6 +212,8 @@ def _fill_openapi_with_excpetions(
     route: APIRoute,
     exceptions: list[tuple[type[StarletteHTTPException], ast.Raise]],
 ) -> None:
+    added_schema_names = set()
+
     for exc, ast_node in exceptions:
         if hasattr(exc, "get_json_schema"):
             casted_exc = typing.cast(type[BaseHTTPException], exc)
@@ -216,8 +221,10 @@ def _fill_openapi_with_excpetions(
         else:
             schema = _extract_json_schema(ast_node, exc)
 
-        if schema is None:
+        if schema is None or schema.schema_name in added_schema_names:
             continue
+
+        added_schema_names.add(schema.schema_name)
 
         str_status_code = str(schema.status_code)
         component_schemas = api_schema.get("components", {}).get("schemas", {})
@@ -290,7 +297,7 @@ def flatten(to_be_flatten: list[list[T]]) -> list[T]:
 
 
 def _extract_starlette_exceptions(
-    route: APIRoute, target_module: Union[list[str], str]
+    route: APIRoute, target_module: list[str]
 ) -> list[tuple[type[StarletteHTTPException], ast.Raise]]:
     dependency_tree = build_dependency_tree(route.dependant)
     exceptions = flatten(
