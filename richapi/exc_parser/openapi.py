@@ -44,11 +44,14 @@ def enrich_openapi(
 ) -> Callable:
     if target_module is None:
         target_module = _find_module_name_where_app_defined_in(app)
+
         if target_module is None or target_module == "__main__":
             raise BaseRichAPIException(
                 "Could not determine the module where the FastAPI instance was created.\n"
                 "Please provide the module name as a string or list of strings."
             )
+
+        target_module = target_module.split(".")[0]  # get the top-level module
 
     def _custom_openapi() -> dict:
         if app.openapi_schema:  # pragma: no cover
