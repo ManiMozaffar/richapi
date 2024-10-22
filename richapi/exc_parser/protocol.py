@@ -33,6 +33,17 @@ class BaseHTTPException(HTTPException):
         return value
 
 
+def try_to_camel_case(string: str) -> str:
+    if " " in string:  # with space
+        components = string.split(" ")
+        return components[0] + "".join(x.title() for x in components[1:])
+    elif "_" in string:  # snake case
+        components = string.split("_")
+        return components[0] + "".join(x.title() for x in components[1:])
+    else:
+        return string  # not known
+
+
 def _generic_json_schema_builder(
     cls: type[Exception],
     detail: str | None = None,
@@ -51,6 +62,8 @@ def _generic_json_schema_builder(
 
     if detail is not None:
         detail_type = Literal[detail]  # type: ignore
+
+        name = f"{try_to_camel_case(detail)}Schema"
     else:
         detail_type = str
 

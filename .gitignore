@@ -6,6 +6,7 @@ docs/source
 __pycache__/
 *.py[cod]
 *$py.class
+.python_version
 
 # C extensions
 *.so

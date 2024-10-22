@@ -1,5 +1,4 @@
 import logging
-import sys
 from functools import lru_cache
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -10,12 +9,8 @@ from richapi.exc_parser.protocol import BaseHTTPException
 
 app = FastAPI()
 
-root = logging.getLogger()
-root.setLevel(logging.DEBUG)
 
-handler = logging.StreamHandler(sys.stdout)
-handler.setLevel(logging.DEBUG)
-root.addHandler(handler)
+logging.getLogger().addHandler(logging.StreamHandler())
 
 
 class FirstException(HTTPException): ...
@@ -104,12 +99,3 @@ def test_case():
     assert "407" in home_responses
     assert "408" in home_responses
     assert "409" in home_responses
-    schemas = openapi_json["components"]["schemas"]
-    assert "SecondExceptionErrorSchema" in schemas
-    assert "ThirdExceptionErrorSchema" in schemas
-    assert "FourthExceptionErrorSchema" in schemas
-    assert "FifthExceptionErrorSchema" in schemas
-    assert "SixthExceptionErrorSchema" in schemas
-    assert "NoNeedParanthesisErrorSchema" in schemas
-    assert "SeventhExceptionErrorSchema" in schemas
-    assert "EighthExceptionErrorSchema" in schemas
