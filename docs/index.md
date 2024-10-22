@@ -8,8 +8,8 @@ pip install richapi
 
 ### Usage
 
-**RichAPI is designed to simplify FastAPI projects by automatically generating documented HTTP responses from HTTPException without extra effort! 🎉
-**
+RichAPI is designed to simplify FastAPI projects by automatically generating documented HTTP responses from HTTPException without extra effort! 🎉
+
 This package is planned to have more features for now that might be essential for any FastAPI project later.
 
 There are multiple way you can do that,
