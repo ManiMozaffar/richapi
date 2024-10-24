@@ -114,7 +114,6 @@ def _find_all_class_exceptions(
             )
         )
 
-    ExceptionFinder.visited = set()  # clean up memory
     return result
 
 
