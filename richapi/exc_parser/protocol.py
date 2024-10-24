@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, TypeAdapter, create_model
+from pydantic.dataclasses import dataclass
 
 
 class HTTPExceptionSchema(BaseModel):
@@ -27,8 +28,36 @@ class BaseHTTPException(HTTPException):
     @classmethod
     def get_json_schema(cls) -> HTTPExceptionSchema:
         value = _generic_json_schema_builder(cls)
-        assert value is not None  # should never happen because status code is always set
+        assert (
+            value is not None
+        )  # should never happen because status code is always set
         return value
+
+
+@dataclass
+class RichHTTPException(HTTPException):
+    status_code: ClassVar[int] = 422
+    """HTTP Status code to raise"""
+
+    _validate_arg_types: ClassVar[bool] = True
+    """Whether to run validation on arguements"""
+
+    @classmethod
+    def get_json_schema(cls) -> HTTPExceptionSchema:
+        adapter = TypeAdapter(cls)
+        schema = adapter.json_schema()
+        schema.pop("status_code", None)
+
+        schema_desc = cls.__doc__
+        if schema_desc == cls.__name__ + "()" or schema_desc is None:
+            schema_desc = "No description provided"
+
+        return HTTPExceptionSchema(
+            response_schema_json=schema,
+            schema_name=f"{cls.__name__}Schema",
+            status_code=cls.status_code,
+            schema_desc=schema_desc,
+        )
 
 
 def try_to_camel_case(string: str) -> str:

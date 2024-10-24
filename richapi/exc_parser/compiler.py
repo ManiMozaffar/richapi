@@ -95,10 +95,14 @@ def _find_all_class_exceptions(
     try:
         tree = tree or ast.parse(inspect.getsource(cls))
     except Exception as error:
-        logger.exception(f"Failed to parse source code for {cls.__name__}.", exc_info=error)
+        logger.exception(
+            f"Failed to parse source code for {cls.__name__}.", exc_info=error
+        )
         return []
 
-    result = _find_explicit_expection_recursively(cls.__init__, to_filter_predicate, tree)
+    result = _find_explicit_expection_recursively(
+        cls.__init__, to_filter_predicate, tree
+    )
     if hasattr(cls, "__call__"):
         # Not sure if __call__ was called or init, so check for both
 
@@ -116,7 +120,9 @@ def _find_all_class_exceptions(
 
 def is_absolutely_callable_object(obj: Callable) -> bool:
     return (
-        inspect.isclass(type(obj)) and (not inspect.isfunction(obj)) and (not inspect.ismethod(obj))
+        inspect.isclass(type(obj))
+        and (not inspect.isfunction(obj))
+        and (not inspect.ismethod(obj))
     )
 
 
@@ -169,7 +175,9 @@ def _find_explicit_expection_recursively(
     try:
         finder.visit(tree)
     except Exception as error:
-        logger.exception(f"Failed to analyze function {get_func_name(func_obj)}.", exc_info=error)
+        logger.exception(
+            f"Failed to analyze function {get_func_name(func_obj)}.", exc_info=error
+        )
 
     return finder.exceptions
 
@@ -247,7 +255,9 @@ def _resolve_function_from_call_node(
     elif isinstance(node, ast.Attribute):
         attr_chain = _resolve_full_attribute_path(node)
         if attr_chain is None:
-            logger.debug(f"Failed to get full attribute name: {ast.dump(node)} in {func.__name__}")
+            logger.debug(
+                f"Failed to get full attribute name: {ast.dump(node)} in {func.__name__}"
+            )
             return None
 
         try:
@@ -267,7 +277,9 @@ def _resolve_function_from_call_node(
                 parent_attr = assignments.get(node_id, None)
 
             if parent_attr is None:
-                if parent_part == "self":  # don't need to log -> we already know this is class
+                if (
+                    parent_part == "self"
+                ):  # don't need to log -> we already know this is class
                     return None
 
                 logger.debug(
@@ -295,7 +307,9 @@ def _extract_node_name(
     Extract the exception name a node recursively.
     """
     if isinstance(node, ast.Call):
-        return _extract_node_name(typing.cast(SupportedAstNodes, node.func), assignments)
+        return _extract_node_name(
+            typing.cast(SupportedAstNodes, node.func), assignments
+        )
     elif isinstance(node, ast.Name):
         var_name = get_node_identifier(node)
         return assignments.get(var_name, var_name)
@@ -303,7 +317,9 @@ def _extract_node_name(
         return _resolve_full_attribute_path(node)
 
     elif isinstance(node, ast.Await):
-        return _extract_node_name(typing.cast(SupportedAstNodes, node.value), assignments)
+        return _extract_node_name(
+            typing.cast(SupportedAstNodes, node.value), assignments
+        )
 
     elif isinstance(
         node,
@@ -351,7 +367,9 @@ def is_stdlib(module_name: str) -> bool:
 class ExceptionFinder(ast.NodeVisitor):
     visited: set[Callable] = set()
 
-    def __init__(self, func: Callable, should_search_module_pred: Callable[[str], bool]):
+    def __init__(
+        self, func: Callable, should_search_module_pred: Callable[[str], bool]
+    ):
         self.exceptions: list[tuple[Optional[type[Exception]], ast.Raise]] = []
         self.assignments: dict[NodeIdentifier, str] = {}
         self.func = func
@@ -481,7 +499,10 @@ class ExceptionFinder(ast.NodeVisitor):
 
             founded_func_ast = _find_in_module(
                 tree,
-                lambda n: (isinstance(n, ast.AsyncFunctionDef) or isinstance(n, ast.FunctionDef))
+                lambda n: (
+                    isinstance(n, ast.AsyncFunctionDef)
+                    or isinstance(n, ast.FunctionDef)
+                )
                 and n.name == func_obj.__name__,
             )
             if founded_func_ast:
@@ -509,7 +530,9 @@ class ExceptionFinder(ast.NodeVisitor):
             try:
                 caller_type = _exctact_type(caller_node_name, self.func_globals)
             except Exception:
-                logger.critical(f"Failed to resolve attribute chain: {caller_node_name}")
+                logger.critical(
+                    f"Failed to resolve attribute chain: {caller_node_name}"
+                )
                 self.generic_visit(node)
                 return
 
@@ -540,7 +563,8 @@ class ExceptionFinder(ast.NodeVisitor):
 
             cls_ast = _find_in_module(
                 tree,
-                lambda n: isinstance(n, ast.ClassDef) and n.name == caller_type.__name__,
+                lambda n: isinstance(n, ast.ClassDef)
+                and n.name == caller_type.__name__,
             )
             if cls_ast:
                 casted_cls_ast = typing.cast(ast.ClassDef, cls_ast)

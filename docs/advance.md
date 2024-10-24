@@ -4,9 +4,6 @@ This is guideline for how to use the library in more advanced ways.
 
 ### Customization of the OpenAPI schema
 
-Sometimes, your exceptions is more than 'details'.
-In that case, you can very explicitly define the exception JSON schema inside the exception class. You may even use Pydantic to define the schema dynamically so you don't need to write the schema manually.
-
 All you need to do, is to return type HTTPExceptionSchema correctly on the method `get_json_schema` of your exception class which you inherited from `BaseHTTPException`.
 
 Imagine you are writing an exception that is returning a user balance and a time to retry again a failed bank transaction, you can define the schema like this:
@@ -33,7 +30,7 @@ class YourException(BaseHTTPException):
 
 ```
 
-Remember that the responsbility of raising and returning the correct data on FastAPI is not library responsibility, but the responsibility of the developer. The library is only responsible for generating the OpenAPI schema by looking at the functions and classes that are raising exceptions.
+If your intention is to have a custom response schema, then recommended way is to use [custom exception feature](index.md#customization-of-exception).
 
 ### Finding exceptions in other modules
 

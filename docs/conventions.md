@@ -6,7 +6,7 @@ Since the library is a mini compiler using Abstract Syntax Tree and functions gl
 
 Keep in mind that if you don't follow these conventions, there would be alot false positive and false negative cases, and the library may not be able to extract the exceptions and their responses correctly.
 
-## Inherit from `richapi.BaseHTTPException`
+## Inherit from `richapi.BaseHTTPException` or `richapi.RichHTTPException`
 
 Exceptions are better to be very concrete, without having any dynamic data in them.
 So that using `raise Class` is enough to raise them.
