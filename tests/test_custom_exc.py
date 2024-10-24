@@ -20,14 +20,14 @@ class NotEnoughBalance(RichHTTPException):
 
     user_id: int
     balance: float
-    status_code = 403
+    status_code = 409
 
 
 class SuccessResponse(BaseModel):
     balance: float
 
 
-@app.get("/payment")
+@app.post("/payment")
 async def make_payment() -> SuccessResponse:
     raise NotEnoughBalance(user_id=1, balance=0.5)
 
@@ -36,8 +36,8 @@ def test_custom_exc_detected():
     openapi_json = compile_openapi_from_fastapi(
         app, target_module="tests.test_custom_exc"
     )
-    home_responses = openapi_json["paths"]["/payment"]["get"]["responses"]
-    assert "403" in home_responses
+    home_responses = openapi_json["paths"]["/payment"]["post"]["responses"]
+    assert "409" in home_responses
 
 
 @pytest.mark.asyncio
@@ -45,7 +45,7 @@ async def test_make_payment():
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        response = await ac.get("/payment")
+        response = await ac.post("/payment")
 
     assert response.status_code == 403
     expected_response = {"user_id": 1, "balance": 0.5}
