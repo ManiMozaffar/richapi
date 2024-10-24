@@ -13,6 +13,9 @@ from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from richapi.exc_parser.compiler import (
+    ExceptionFinder,
+)
+from richapi.exc_parser.compiler import (
     find_explicit_exceptions as _find_explicit_exceptions,
 )
 from richapi.exc_parser.protocol import (
@@ -87,6 +90,8 @@ def compile_openapi_from_fastapi(
             exceptions = _extract_starlette_exceptions(route, target_module)
 
             _fill_openapi_with_excpetions(openapi_schema, route, exceptions)
+
+    ExceptionFinder.visited.clear()
 
     return openapi_schema
 
