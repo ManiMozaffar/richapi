@@ -47,6 +47,6 @@ async def test_make_payment():
     ) as ac:
         response = await ac.post("/payment")
 
-    assert response.status_code == 403
+    assert response.status_code == 409
     expected_response = {"user_id": 1, "balance": 0.5}
     assert response.json() == expected_response
