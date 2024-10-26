@@ -39,31 +39,28 @@ def foo3():
 
 
 class PaymentService:
-    def __init__(self):
+    def foo(self):
         foo1()
+        return self
 
     def create(self):
         foo2()
+        return self
 
     def update(self):
         foo3()
-
-
-def make_payment_dep():
-    obj = PaymentService()
+        return self
 
 
 @app.post("/payment")
-async def make_payment(
-    obj2: PaymentService = fastapi.Depends(make_payment_dep),
-):
-    obj = PaymentService()
-    obj.create()
-    obj2.update()
+async def make_payment():
+    PaymentService().foo().create().update()
 
 
 def test_class_is_detected():
-    openapi_json = compile_openapi_from_fastapi(app, target_module="tests.test_class")
+    openapi_json = compile_openapi_from_fastapi(
+        app, target_module="tests.test_builder_pattern"
+    )
     home_responses = openapi_json["paths"]["/payment"]["post"]["responses"]
     print(home_responses)
     assert "408" in home_responses

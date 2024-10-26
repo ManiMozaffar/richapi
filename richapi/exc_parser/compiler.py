@@ -226,12 +226,37 @@ def _resolve_full_attribute_path(node: ast.AST) -> Union[str, None]:
     return None
 
 
-def _resolve_function_from_call_node(
+def _resolve_type_from_assigment(
+    resolved_value: Union[str, type, None],
+    assignments: dict[NodeIdentifier, str],
+    func: Callable,
+):
+    if resolved_value is None:
+        return None
+
+    # because assigment are stored as string
+    # ! A string type could be also called like str("Foo").lower() so we fallback to parent_attr in case it remains as string
+
+    if isinstance(resolved_value, str):
+        resolved_value = func.__globals__.get(resolved_value, resolved_value)
+
+    if isinstance(resolved_value, str):
+        resolved_value = assignments.get(NodeIdentifier(resolved_value), resolved_value)
+
+    if isinstance(resolved_value, str):
+        resolved_value = func.__annotations__.get(resolved_value, resolved_value)
+
+    if isinstance(resolved_value, str):  # last fallback
+        resolved_value = _exctact_type(resolved_value, func.__globals__)
+
+    return resolved_value
+
+
+def _resolve_functions_from_call_node(
     call_node: ast.Call,
-    func_globals: dict,
     func: Callable,
     assignments: dict[NodeIdentifier, str],
-):
+) -> Union[list[Callable], None]:
     """
     Attempt to resolve the function object from a call node.
     Handles both simple function calls and method calls.
@@ -240,7 +265,7 @@ def _resolve_function_from_call_node(
 
     if isinstance(node, ast.Name):
         # Simple function call: func()
-        value = func_globals.get(node.id, None)
+        value = func.__globals__.get(node.id, None)
 
         if value is None:
             value = getattr(builtins, node.id, None)
@@ -262,7 +287,7 @@ def _resolve_function_from_call_node(
             parts = attr_chain.split(".")
             parent_part = parts[0]
 
-            parent_attr = func_globals.get(parent_part, None)
+            parent_attr = func.__globals__.get(parent_part, None)
 
             if parent_attr is None:
                 if parent_part in func.__annotations__:
@@ -285,19 +310,20 @@ def _resolve_function_from_call_node(
                 )
                 return None
 
-            if isinstance(parent_attr, str):
-                # because assigment are stored as string
-                # ! A string type could be also called like str("Foo").lower() so we fallback to parent_attr in case it remains as string
-                parent_attr = func_globals.get(parent_attr, parent_attr)
+            parent_attr = _resolve_type_from_assigment(parent_attr, assignments, func)
 
+            results: list[Callable] = []
             for attr in parts[1:]:
                 try:
                     obj = getattr(parent_attr, attr, None)
+                    if obj is not None:
+                        results.append(obj)
+                        return [obj]
 
                 except Exception:
                     break
 
-                return obj
+            return results
 
         except Exception:
             logger.exception(f"Failed to resolve attribute chain: {attr_chain}")
@@ -377,7 +403,6 @@ class ExceptionFinder(ast.NodeVisitor):
         self.exceptions: list[tuple[Optional[type[Exception]], ast.Raise]] = []
         self.assignments: dict[NodeIdentifier, str] = {}
         self.func = func
-        self.func_globals = func.__globals__
         self.should_search_module_pred = should_search_module_pred
         logger.info(f"Analyzing function {func.__name__}")
 
@@ -462,7 +487,7 @@ class ExceptionFinder(ast.NodeVisitor):
             logger.debug(f"Failed to get exception name: {ast.dump(node)}")
             return
 
-        exc_type = _exctact_type(exc_variable_name, self.func_globals)
+        exc_type = _exctact_type(exc_variable_name, self.func.__globals__)
 
         if exc_type:
             self.exceptions.append((exc_type, node))
@@ -474,51 +499,60 @@ class ExceptionFinder(ast.NodeVisitor):
         """
         Handle function calls and recursively analyze called functions.
         """
-        func_obj = _resolve_function_from_call_node(
-            node, self.func_globals, self.func, self.assignments
-        )
-        if func_obj and inspect.isfunction(func_obj):
-            module = inspect.getmodule(func_obj)
+        func_objs = _resolve_functions_from_call_node(node, self.func, self.assignments)
+        if func_objs is None:
+            self.generic_visit(node)
+            return
 
-            if not module:
-                self.generic_visit(node)
-                return
+        for func_obj in func_objs:
+            if inspect.isfunction(func_obj):
+                module = inspect.getmodule(func_obj)
 
-            if (
-                is_stdlib(module.__name__)
-                or self.should_search_module_pred(module.__name__) is False
-            ):
-                self.generic_visit(node)
-                return
+                if not module:
+                    self.generic_visit(node)
+                    return
 
-            source = inspect.getsource(module)
-            try:
-                tree = ast.parse(source)
-            except BaseException as error:
-                logger.exception(
-                    f"Failed to parse source code for {func_obj.__name__}.",
-                    exc_info=error,
-                )
-                self.generic_visit(node)
-                return
+                if (
+                    is_stdlib(module.__name__)
+                    or self.should_search_module_pred(module.__name__) is False
+                ):
+                    self.generic_visit(node)
+                    return
 
-            founded_func_ast = _find_in_module(
-                tree,
-                lambda n: (
-                    isinstance(n, ast.AsyncFunctionDef)
-                    or isinstance(n, ast.FunctionDef)
+                source = inspect.getsource(module)
+                try:
+                    tree = ast.parse(source)
+                except BaseException as error:
+                    logger.exception(
+                        f"Failed to parse source code for {func_obj.__name__}.",
+                        exc_info=error,
+                    )
+                    self.generic_visit(node)
+                    return
+
+                founded_func_ast = _find_in_module(
+                    tree,
+                    lambda n: (
+                        isinstance(n, ast.AsyncFunctionDef)
+                        or isinstance(n, ast.FunctionDef)
+                    )
+                    and n.name == func_obj.__name__,
                 )
-                and n.name == func_obj.__name__,
-            )
-            if founded_func_ast:
-                excs = _find_explicit_expection_recursively(
-                    func_obj, self.should_search_module_pred, founded_func_ast
+                if founded_func_ast:
+                    excs = _find_explicit_expection_recursively(
+                        func_obj, self.should_search_module_pred, founded_func_ast
+                    )
+                    self.exceptions.extend(excs)
+                else:
+                    logger.debug(
+                        f"Failed to find function {func_obj.__name__} in module {module.__name__}"
+                    )
+
+            elif inspect.isclass(func_obj):
+                _excs = _find_explicit_expection_recursively(
+                    func_obj, self.should_search_module_pred
                 )
-                self.exceptions.extend(excs)
-            else:
-                logger.debug(
-                    f"Failed to find function {func_obj.__name__} in module {module.__name__}"
-                )
+                self.exceptions.extend(_excs)
 
         self.generic_visit(node)
         return
@@ -533,7 +567,7 @@ class ExceptionFinder(ast.NodeVisitor):
                 return
 
             try:
-                caller_type = _exctact_type(caller_node_name, self.func_globals)
+                caller_type = _exctact_type(caller_node_name, self.func.__globals__)
             except Exception:
                 logger.critical(
                     f"Failed to resolve attribute chain: {caller_node_name}"
