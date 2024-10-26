@@ -131,7 +131,7 @@ def _find_explicit_expection_recursively(
     tree: Optional[ast.AST] = None,
 ) -> list[tuple[Optional[type[Exception]], ast.Raise]]:
     if func_obj in ExceptionFinder.visited:
-        return []
+        return ExceptionFinder.visited[func_obj]
 
     module = inspect.getmodule(func_obj)
     if module and is_stdlib(module.__name__):
@@ -148,8 +148,6 @@ def _find_explicit_expection_recursively(
             return []
 
         return _find_all_class_exceptions(type(func_obj), to_filter_predicate, tree)
-
-    ExceptionFinder.visited.add(func_obj)
 
     if tree is None:
         try:
@@ -178,6 +176,7 @@ def _find_explicit_expection_recursively(
             f"Failed to analyze function {get_func_name(func_obj)}.", exc_info=error
         )
 
+    ExceptionFinder.visited[func_obj] = finder.exceptions
     return finder.exceptions
 
 
@@ -364,7 +363,7 @@ def is_stdlib(module_name: str) -> bool:
 
 
 class ExceptionFinder(ast.NodeVisitor):
-    visited: set[Callable] = set()
+    visited: dict[Callable, list[tuple[Optional[type[Exception]], ast.Raise]]] = {}
 
     def __init__(
         self, func: Callable, should_search_module_pred: Callable[[str], bool]
