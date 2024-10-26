@@ -88,16 +88,15 @@ def get_func_name(func: Callable) -> str:
 
 
 def _find_all_class_exceptions(
-    cls: type,
+    cls: Union[type, Callable],
     to_filter_predicate: Callable[[str], bool],
     tree: Optional[ast.AST] = None,
 ):
     try:
         tree = tree or ast.parse(inspect.getsource(cls))
     except Exception as error:
-        logger.exception(
-            f"Failed to parse source code for {cls.__name__}.", exc_info=error
-        )
+        cls_name = cls.__name__ if hasattr(cls, "__name__") else cls.__str__()
+        logger.exception(f"Failed to parse source code for {cls_name}.", exc_info=error)
         return []
 
     result = _find_explicit_expection_recursively(
@@ -141,13 +140,17 @@ def _find_explicit_expection_recursively(
         return []
 
     if is_absolutely_callable_object(func_obj):
-        cls_module = inspect.getmodule(type(func_obj))
+        class_type: Union[type, Callable] = (
+            obj_type if (obj_type := type(func_obj)) is not type else func_obj
+        )
+
+        cls_module = inspect.getmodule(class_type)
         if cls_module and is_stdlib(cls_module.__name__):
             return []
         if cls_module and to_filter_predicate(cls_module.__name__) is False:
             return []
 
-        return _find_all_class_exceptions(type(func_obj), to_filter_predicate, tree)
+        return _find_all_class_exceptions(class_type, to_filter_predicate, tree)
 
     if tree is None:
         try:
@@ -273,7 +276,9 @@ def _resolve_functions_from_call_node(
         if value is None:
             logger.debug(f"Function '{node.id}' not found in {func.__name__}")
 
-        return value
+        if value is not None:
+            return [value]
+        return None
 
     elif isinstance(node, ast.Attribute):
         attr_chain = _resolve_full_attribute_path(node)
@@ -291,7 +296,7 @@ def _resolve_functions_from_call_node(
 
             if parent_attr is None:
                 if parent_part in func.__annotations__:
-                    return func.__annotations__[parent_part]
+                    return [func.__annotations__[parent_part]]
 
                 parent_attr = getattr(builtins, parent_part, None)
 
@@ -318,7 +323,6 @@ def _resolve_functions_from_call_node(
                     obj = getattr(parent_attr, attr, None)
                     if obj is not None:
                         results.append(obj)
-                        return [obj]
 
                 except Exception:
                     break

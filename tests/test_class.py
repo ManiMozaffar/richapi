@@ -51,6 +51,7 @@ class PaymentService:
 
 def make_payment_dep():
     obj = PaymentService()
+    return obj
 
 
 @app.post("/payment")
