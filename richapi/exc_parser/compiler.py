@@ -285,9 +285,15 @@ def _resolve_function_from_call_node(
                 )
                 return None
 
+            if isinstance(parent_attr, str):
+                # because assigment are stored as string
+                # ! A string type could be also called like str("Foo").lower() so we fallback to parent_attr in case it remains as string
+                parent_attr = func_globals.get(parent_attr, parent_attr)
+
             for attr in parts[1:]:
                 try:
                     obj = getattr(parent_attr, attr, None)
+
                 except Exception:
                     break
 
@@ -473,6 +479,7 @@ class ExceptionFinder(ast.NodeVisitor):
         )
         if func_obj and inspect.isfunction(func_obj):
             module = inspect.getmodule(func_obj)
+
             if not module:
                 self.generic_visit(node)
                 return
