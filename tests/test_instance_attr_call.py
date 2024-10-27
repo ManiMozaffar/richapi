@@ -59,6 +59,7 @@ class PaymentOrchestrator:
 
     def create_outer(self):
         self.service.create_inner()
+        self.update_outer()
 
     def update_outer(self):
         self.service.update_inner()
@@ -68,7 +69,6 @@ class PaymentOrchestrator:
 async def make_payment():
     obj = PaymentOrchestrator(payment_service=PaymentService())
     obj.create_outer()
-    obj.update_outer()
 
 
 def test_class_is_detected():
