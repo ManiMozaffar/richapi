@@ -4,9 +4,11 @@ import inspect
 import logging
 import sysconfig
 import typing
-from functools import lru_cache
 from importlib.util import find_spec
-from typing import Callable, List, NewType, Optional, Tuple, Union
+from types import ModuleType
+from typing import Annotated, Callable, List, NewType, Optional, Tuple, Union
+
+import typing_extensions
 
 logger = logging.getLogger(__name__)
 
@@ -133,10 +135,7 @@ def _find_explicit_expection_recursively(
         return ExceptionFinder.visited[func_obj]
 
     module = inspect.getmodule(func_obj)
-    if module and is_stdlib(module.__name__):
-        return []
-
-    if module and to_filter_predicate(module.__name__) is False:
+    if module is None or _should_be_visited(module, to_filter_predicate) is False:
         return []
 
     if is_absolutely_callable_object(func_obj):
@@ -229,6 +228,15 @@ def _resolve_full_attribute_path(node: ast.AST) -> Union[str, None]:
     return None
 
 
+def _retrieve_from_annotations(func: Callable, var_name: str) -> Optional[type]:
+    result = func.__annotations__.get(var_name, None)
+    if result is None:
+        return None
+    if isinstance(result, Annotated):
+        return _retrieve_from_annotations(func, result.__metadata__[0])
+    return result
+
+
 def _resolve_type_from_assigment(
     resolved_value: Union[str, type, None],
     assignments: dict[NodeIdentifier, str],
@@ -247,7 +255,9 @@ def _resolve_type_from_assigment(
         resolved_value = assignments.get(NodeIdentifier(resolved_value), resolved_value)
 
     if isinstance(resolved_value, str):
-        resolved_value = func.__annotations__.get(resolved_value, resolved_value)
+        resolved_value = (
+            _retrieve_from_annotations(func, resolved_value) or resolved_value
+        )
 
     if isinstance(resolved_value, str):  # last fallback
         resolved_value = _exctact_type(resolved_value, func.__globals__)
@@ -259,7 +269,7 @@ def _resolve_functions_from_call_node(
     call_node: ast.Call,
     func: Callable,
     assignments: dict[NodeIdentifier, str],
-) -> Union[list[Callable], None]:
+) -> list[type]:
     """
     Attempt to resolve the function object from a call node.
     Handles both simple function calls and method calls.
@@ -278,7 +288,7 @@ def _resolve_functions_from_call_node(
 
         if value is not None:
             return [value]
-        return None
+        return []
 
     elif isinstance(node, ast.Attribute):
         attr_chain = _resolve_full_attribute_path(node)
@@ -286,7 +296,7 @@ def _resolve_functions_from_call_node(
             logger.debug(
                 f"Failed to get full attribute name: {ast.dump(node)} in {func.__name__}"
             )
-            return None
+            return []
 
         try:
             parts = attr_chain.split(".")
@@ -295,29 +305,64 @@ def _resolve_functions_from_call_node(
             parent_attr = func.__globals__.get(parent_part, None)
 
             if parent_attr is None:
-                if parent_part in func.__annotations__:
-                    return [func.__annotations__[parent_part]]
-
-                parent_attr = getattr(builtins, parent_part, None)
-
-            if parent_attr is None:
                 node_id = NodeIdentifier(parent_part)
                 parent_attr = assignments.get(node_id, None)
 
             if parent_attr is None:
-                if (
-                    parent_part == "self"
-                ):  # don't need to log -> we already know this is class
-                    return None
+                if parent_part in func.__annotations__:
+                    result = _retrieve_from_annotations(func, parent_part)
+                    return [] if result is None else [result]
+
+                parent_attr = getattr(builtins, parent_part, None)
+
+            if parent_attr is None:
+                # use case where you're calling self.foo.do_something(), where self.foo is a class attribute that is a class itself
+                if parent_part == "self" or parent_part == "cls":
+                    property_name = parts[1]
+                    # ['class_name', 'method_name']
+                    qual_names = func.__qualname__.split(".")
+                    # ['class_name']
+                    func_name_index = qual_names.index(func.__name__)
+                    # 'class_name'
+                    cls_name = qual_names[func_name_index - 1]
+                    # class_name (type)
+                    cls: Union[Callable, None] = func.__globals__.get(cls_name, None)
+
+                    if cls is None:
+                        logger.debug(
+                            f"Failed to resolve parent class {cls} for parts {attr_chain}. Chain: {ast.dump(node)} for func {func.__name__}"
+                        )
+                        return []
+                    attr_class = _retrieve_from_annotations(cls, property_name)
+                    if attr_class is None:  # part of convention
+                        return []
+
+                    results: list[type] = []
+                    try:
+                        obj = getattr(attr_class, "__init__", None)
+                        if obj is not None:
+                            results.append(obj)
+                    except Exception:
+                        pass
+
+                    for attr in parts[2:]:
+                        try:
+                            obj = getattr(attr_class, attr, None)
+
+                            if obj is not None:
+                                results.append(obj)
+                        except Exception:
+                            break
+
+                    return results
 
                 logger.debug(
                     f"Failed to resolve parent attribute {parent_part} for parts {attr_chain}. Chain: {ast.dump(node)} for func {func.__name__}"
                 )
-                return None
+                return []
 
             parent_attr = _resolve_type_from_assigment(parent_attr, assignments, func)
-
-            results: list[Callable] = []
+            results: list[type] = []
             for attr in parts[1:]:
                 try:
                     obj = getattr(parent_attr, attr, None)
@@ -331,7 +376,9 @@ def _resolve_functions_from_call_node(
 
         except Exception:
             logger.exception(f"Failed to resolve attribute chain: {attr_chain}")
-            return None
+            return []
+
+    return []
 
 
 def _extract_node_name(
@@ -384,7 +431,19 @@ def _exctact_type(var_tyep: str, func_globals: dict) -> Optional[type]:
         logger.exception(f"Failed to resolve variable type: {var_tyep}")
 
 
-@lru_cache
+def _should_be_visited(
+    module: Union[ModuleType, str],
+    should_search_module_pred: Callable[[str], bool],
+):
+    if (
+        is_stdlib(module.__name__)
+        or should_search_module_pred(module.__name__) is False
+    ):
+        return False
+
+    return True
+
+
 def is_stdlib(module_name: str) -> bool:
     """Check if a given module is part of the Python standard library."""
     try:
@@ -400,15 +459,27 @@ def is_stdlib(module_name: str) -> bool:
 
 class ExceptionFinder(ast.NodeVisitor):
     visited: dict[Callable, list[tuple[Optional[type[Exception]], ast.Raise]]] = {}
+    # cached_assignments: dict[Callable, dict[NodeIdentifier, str]] = {}
 
     def __init__(
         self, func: Callable, should_search_module_pred: Callable[[str], bool]
     ):
         self.exceptions: list[tuple[Optional[type[Exception]], ast.Raise]] = []
         self.assignments: dict[NodeIdentifier, str] = {}
+        # self.cached_assignments[func] = self.assignments
         self.func = func
         self.should_search_module_pred = should_search_module_pred
         logger.info(f"Analyzing function {func.__name__}")
+
+    @classmethod
+    def clear_cache(cls):
+        cls.visited.clear()
+        # cls.cached_assignments.clear()
+
+    def _should_be_visited(
+        self, module: Union[ModuleType, str]
+    ) -> typing_extensions.TypeGuard[ModuleType]:
+        return _should_be_visited(module, self.should_search_module_pred)
 
     def visit_Assign(self, node):
         """
@@ -435,10 +506,11 @@ class ExceptionFinder(ast.NodeVisitor):
 
         for target in targets:
             if isinstance(target, ast.Name):
-                var_identifier = get_node_identifier(target)
-                var_name = _extract_node_name(value, self.assignments)
-                if var_name is not None:
-                    self.assignments[var_identifier] = var_name
+                var_name = get_node_identifier(target)
+                var_result = _extract_node_name(value, self.assignments)
+
+                if var_result is not None:
+                    self.assignments[var_name] = var_result
 
                 else:
                     # no need to log here. it would be very spammy
@@ -504,24 +576,11 @@ class ExceptionFinder(ast.NodeVisitor):
         Handle function calls and recursively analyze called functions.
         """
         func_objs = _resolve_functions_from_call_node(node, self.func, self.assignments)
-        if func_objs is None:
-            self.generic_visit(node)
-            return
-
         for func_obj in func_objs:
             if inspect.isfunction(func_obj):
                 module = inspect.getmodule(func_obj)
-
-                if not module:
-                    self.generic_visit(node)
-                    return
-
-                if (
-                    is_stdlib(module.__name__)
-                    or self.should_search_module_pred(module.__name__) is False
-                ):
-                    self.generic_visit(node)
-                    return
+                if module is None or self._should_be_visited(module) is False:
+                    continue
 
                 source = inspect.getsource(module)
                 try:
@@ -589,7 +648,7 @@ class ExceptionFinder(ast.NodeVisitor):
                 return
 
             module = inspect.getmodule(caller_type)
-            if not module:
+            if module is None or self._should_be_visited(module) is False:
                 self.generic_visit(node)
                 return
 

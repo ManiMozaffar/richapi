@@ -91,7 +91,7 @@ def compile_openapi_from_fastapi(
 
             _fill_openapi_with_excpetions(openapi_schema, route, exceptions)
 
-    ExceptionFinder.visited.clear()
+    ExceptionFinder.clear_cache()
 
     return openapi_schema
 
