@@ -89,3 +89,29 @@ Keep it simple, keep the exception type next to raise keyword; without any dynam
 !!! info "Expected Behavior"
 
     Library **MIGHT skip** adding the exception to the OpenAPI schema depending on how complicated the exception raising is.
+
+## Always Provide Type Annotations For Class/Instance Attributes And Function Arguments
+
+To enable accurate type resolution during static analysis, always provide type annotations for your variables, function parameters, and return types. Without type annotations, it's nearly impossible for the library to infer types correctly, which may lead to false positives or negatives. That stands for class attributes and function arguments.
+
+Example:
+
+```Python hl_lines="6 12"
+class Foo:
+    def foo(self) -> None:
+        raise HTTPException(status_code=400, detail="This is not allowed")
+
+class Baz:
+    foo: Foo # this is very important to have type annotations for class/instance attributes
+
+    def __init__(self, foo: Foo):
+        self.foo = foo
+
+    def foo(self) -> None:
+        # if you don't type annotate, RichAPI doesn't have any idea about the type of self.fo
+        self.foo.foo()
+```
+
+!!! info "Expected Behavior"
+
+    Library **WILL skip** adding exceptions to the OpenAPI schema if it cannot resolve types due to missing annotations.
