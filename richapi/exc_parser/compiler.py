@@ -6,7 +6,7 @@ import sysconfig
 import typing
 from importlib.util import find_spec
 from types import ModuleType
-from typing import Annotated, Callable, List, NewType, Optional, Tuple, Union
+from typing import Annotated, Callable, Generic, List, NewType, Optional, Tuple, Union
 
 import typing_extensions
 
@@ -232,8 +232,12 @@ def _retrieve_from_annotations(func: Callable, var_name: str) -> Optional[type]:
     result = func.__annotations__.get(var_name, None)
     if result is None:
         return None
-    if isinstance(result, Annotated):
-        return _retrieve_from_annotations(func, result.__metadata__[0])
+
+    origin = typing.get_origin(result)
+    if origin is Annotated:
+        return result.__origin__
+    elif origin is not None and origin != Generic:
+        return origin
     return result
 
 
@@ -432,7 +436,7 @@ def _exctact_type(var_tyep: str, func_globals: dict) -> Optional[type]:
 
 
 def _should_be_visited(
-    module: Union[ModuleType, str],
+    module: ModuleType,
     should_search_module_pred: Callable[[str], bool],
 ):
     if (
@@ -477,7 +481,7 @@ class ExceptionFinder(ast.NodeVisitor):
         # cls.cached_assignments.clear()
 
     def _should_be_visited(
-        self, module: Union[ModuleType, str]
+        self, module: ModuleType
     ) -> typing_extensions.TypeGuard[ModuleType]:
         return _should_be_visited(module, self.should_search_module_pred)
 
