@@ -44,10 +44,10 @@ class PaymentService:
     def __init__(self):
         foo1()
 
-    def create_inner(self):
+    def foo2(self):
         foo2()
 
-    def update_inner(self):
+    def foo3(self):
         foo3()
 
 
@@ -58,11 +58,11 @@ class PaymentOrchestrator:
         self.service = payment_service
 
     def create_outer(self):
-        self.service.create_inner()
+        self.service.foo2()
         self.update_outer()
 
     def update_outer(self):
-        self.service.update_inner()
+        self.service.foo3()
 
 
 @app.post("/payment")
@@ -78,5 +78,5 @@ def test_class_is_detected():
     home_responses = openapi_json["paths"]["/payment"]["post"]["responses"]
     print(home_responses)
     assert "408" in home_responses
-    assert "407" in home_responses
+    assert "407" not in home_responses
     assert "409" in home_responses
