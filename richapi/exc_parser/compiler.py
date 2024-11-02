@@ -60,6 +60,22 @@ def is_in_module(module: str, target_modules: list[str]) -> bool:
     return False
 
 
+def _get_tree(obj: Callable):
+    to_search = obj
+    if is_absolutely_callable_object(obj):
+        to_search: Union[type, Callable] = (
+            obj_type if (obj_type := type(obj)) is not type else obj
+        )
+
+    try:
+        tree = ast.parse(inspect.getsource(to_search))
+        return tree
+    except Exception as error:
+        obj_name = obj.__name__ if hasattr(obj, "__name__") else obj.__str__()
+        logger.debug(f"Failed to parse source code for {obj_name}", exc_info=error)
+        return None
+
+
 def find_explicit_exceptions(
     func: Callable,
     target_modules: list[str],
@@ -82,7 +98,15 @@ def find_explicit_exceptions(
 
         should_search_module_pred = should_search_module_pred_func
 
-    return _find_explicit_expection_recursively(func, should_search_module_pred)
+    module = inspect.getmodule(func)
+    if module is None or _should_be_visited(module, should_search_module_pred) is False:
+        return []
+
+    tree = _get_tree(func)
+    if tree is None:
+        return []
+
+    return _find_explicit_expection_recursively(func, should_search_module_pred, tree)
 
 
 def get_func_name(func: Callable) -> str:
@@ -93,6 +117,12 @@ def _find_all_class_exceptions(
     cls: Union[type, Callable],
     to_filter_predicate: Callable[[str], bool],
 ):
+    cls_module = inspect.getmodule(cls)
+    if cls_module and is_stdlib(cls_module.__name__):
+        return []
+    if cls_module and to_filter_predicate(cls_module.__name__) is False:
+        return []
+
     try:
         cls_tree = ast.parse(inspect.getsource(cls))
     except Exception as error:
@@ -110,9 +140,14 @@ def _find_all_class_exceptions(
         and n.name == "__init__",
     )
 
-    result = _find_explicit_expection_recursively(
-        cls.__init__, to_filter_predicate, init_tree
-    )
+    result: list[tuple[Optional[type[Exception]], ast.Raise]] = []
+    if init_tree is not None:
+        result.extend(
+            _find_explicit_expection_recursively(
+                cls.__init__, to_filter_predicate, init_tree
+            )
+        )
+
     if hasattr(cls, "__call__"):
         # Not sure if __call__ was called or init, so check for both
         call_tree = _find_in_module(
@@ -123,11 +158,12 @@ def _find_all_class_exceptions(
             and n.name == "__call__",
         )
 
-        result.extend(
-            _find_explicit_expection_recursively(
-                getattr(cls, "__call__"), to_filter_predicate, call_tree
+        if call_tree is not None:
+            result.extend(
+                _find_explicit_expection_recursively(
+                    getattr(cls, "__call__"), to_filter_predicate, call_tree
+                )
             )
-        )
 
     return result
 
@@ -143,7 +179,7 @@ def is_absolutely_callable_object(obj: Callable) -> bool:
 def _find_explicit_expection_recursively(
     func_obj: Callable,
     to_filter_predicate: Callable[[str], bool],
-    tree: Optional[ast.AST] = None,
+    tree: ast.AST,
 ) -> list[tuple[Optional[type[Exception]], ast.Raise]]:
     if func_obj in ExceptionFinder.visited:
         return ExceptionFinder.visited[func_obj]
@@ -156,33 +192,7 @@ def _find_explicit_expection_recursively(
         class_type: Union[type, Callable] = (
             obj_type if (obj_type := type(func_obj)) is not type else func_obj
         )
-
-        cls_module = inspect.getmodule(class_type)
-        if cls_module and is_stdlib(cls_module.__name__):
-            return []
-        if cls_module and to_filter_predicate(cls_module.__name__) is False:
-            return []
-
         return _find_all_class_exceptions(class_type, to_filter_predicate)
-
-    if tree is None:
-        try:
-            source = inspect.getsource(func_obj)
-        except (OSError, TypeError) as error:
-            logger.exception(
-                f"Failed to get source code for {get_func_name(func_obj)}.",
-                exc_info=error,
-            )
-            return []
-
-        try:
-            tree = ast.parse(source)
-        except IndentationError as error:
-            logger.exception(
-                f"Failed to get source code for {get_func_name(func_obj)}.",
-                exc_info=error,
-            )
-            return []
 
     finder = ExceptionFinder(func_obj, to_filter_predicate)
     try:
@@ -624,7 +634,7 @@ class ExceptionFinder(ast.NodeVisitor):
                     )
 
             elif inspect.isclass(func_obj):
-                _excs = _find_explicit_expection_recursively(
+                _excs = _find_all_class_exceptions(
                     func_obj, self.should_search_module_pred
                 )
                 self.exceptions.extend(_excs)
@@ -644,9 +654,7 @@ class ExceptionFinder(ast.NodeVisitor):
             try:
                 caller_type = _exctact_type(caller_node_name, self.func.__globals__)
             except Exception:
-                logger.critical(
-                    f"Failed to resolve attribute chain: {caller_node_name}"
-                )
+                logger.debug(f"Failed to resolve attribute chain: {caller_node_name}")
                 self.generic_visit(node)
                 return
 
