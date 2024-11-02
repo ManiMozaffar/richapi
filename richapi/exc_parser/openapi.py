@@ -51,7 +51,8 @@ def enrich_openapi(
         if target_module is None or target_module == "__main__":
             raise BaseRichAPIException(
                 "Could not determine the module where the FastAPI instance was created.\n"
-                "Please provide the module name as a string or list of strings."
+                "Please provide the module name as a string or list of strings.\n"
+                "Example: enrich_openapi(app, target_module='src')\n"
             )
 
         target_module = target_module.split(".")[0]  # get the top-level module
