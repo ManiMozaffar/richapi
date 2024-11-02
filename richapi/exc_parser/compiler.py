@@ -92,26 +92,40 @@ def get_func_name(func: Callable) -> str:
 def _find_all_class_exceptions(
     cls: Union[type, Callable],
     to_filter_predicate: Callable[[str], bool],
-    tree: Optional[ast.AST] = None,
 ):
     try:
-        tree = tree or ast.parse(inspect.getsource(cls))
+        cls_tree = ast.parse(inspect.getsource(cls))
     except Exception as error:
         cls_name = cls.__name__ if hasattr(cls, "__name__") else cls.__str__()
-        logger.exception(f"Failed to parse source code for {cls_name}.", exc_info=error)
+        logger.info(
+            f"Failed to parse source code for {cls_name}.__init__", exc_info=error
+        )
         return []
 
+    init_tree = _find_in_module(
+        cls_tree,
+        lambda n: (
+            isinstance(n, ast.AsyncFunctionDef) or isinstance(n, ast.FunctionDef)
+        )
+        and n.name == "__init__",
+    )
+
     result = _find_explicit_expection_recursively(
-        cls.__init__, to_filter_predicate, tree
+        cls.__init__, to_filter_predicate, init_tree
     )
     if hasattr(cls, "__call__"):
         # Not sure if __call__ was called or init, so check for both
+        call_tree = _find_in_module(
+            cls_tree,
+            lambda n: (
+                isinstance(n, ast.AsyncFunctionDef) or isinstance(n, ast.FunctionDef)
+            )
+            and n.name == "__call__",
+        )
 
         result.extend(
             _find_explicit_expection_recursively(
-                cls.__call__,  # type: ignore
-                to_filter_predicate,
-                tree,
+                getattr(cls, "__call__"), to_filter_predicate, call_tree
             )
         )
 
@@ -149,7 +163,7 @@ def _find_explicit_expection_recursively(
         if cls_module and to_filter_predicate(cls_module.__name__) is False:
             return []
 
-        return _find_all_class_exceptions(class_type, to_filter_predicate, tree)
+        return _find_all_class_exceptions(class_type, to_filter_predicate)
 
     if tree is None:
         try:
@@ -312,12 +326,8 @@ def _resolve_functions_from_call_node(
                 node_id = NodeIdentifier(parent_part)
                 parent_attr = assignments.get(node_id, None)
 
-            if parent_attr is None:
-                if parent_part in func.__annotations__:
-                    result = _retrieve_from_annotations(func, parent_part)
-                    return [] if result is None else [result]
-
-                parent_attr = getattr(builtins, parent_part, None)
+            if parent_attr is None and parent_part in func.__annotations__:
+                parent_attr = _retrieve_from_annotations(func, parent_part)
 
             if parent_attr is None:
                 # use case where you're calling self.foo.do_something(), where self.foo is a class attribute that is a class itself
@@ -463,7 +473,6 @@ def is_stdlib(module_name: str) -> bool:
 
 class ExceptionFinder(ast.NodeVisitor):
     visited: dict[Callable, list[tuple[Optional[type[Exception]], ast.Raise]]] = {}
-    # cached_assignments: dict[Callable, dict[NodeIdentifier, str]] = {}
 
     def __init__(
         self, func: Callable, should_search_module_pred: Callable[[str], bool]
@@ -473,12 +482,11 @@ class ExceptionFinder(ast.NodeVisitor):
         # self.cached_assignments[func] = self.assignments
         self.func = func
         self.should_search_module_pred = should_search_module_pred
-        logger.info(f"Analyzing function {func.__name__}")
+        logger.debug(f"Analyzing function {func.__name__}")
 
     @classmethod
     def clear_cache(cls):
         cls.visited.clear()
-        # cls.cached_assignments.clear()
 
     def _should_be_visited(
         self, module: ModuleType
