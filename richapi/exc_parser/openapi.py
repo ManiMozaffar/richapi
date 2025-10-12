@@ -141,19 +141,17 @@ def find_exceptions_in_api_functions(
     result: set[type[StarletteHTTPException]] = set()
     for func in funcs:
         this_func_target_module = _validate_target_module(target_module, func)
-
-        if fastapi_app is not None:
-            this_route = _find_fastapi_route_from_callback(fastapi_app, func)
-            if this_route is None:
-                raise BaseRichAPIException(
-                    f"Could not find the route for function {func} in FastAPI app {fastapi_app}"
-                )
-
-            exceptions = _extract_starlette_exceptions(
-                this_route, this_func_target_module + ["fastapi"]
+        this_route = _find_fastapi_route_from_callback(fastapi_app, func)
+        if this_route is None:
+            raise BaseRichAPIException(
+                f"Could not find the route for function {func} in FastAPI app {fastapi_app}"
             )
-            for exc, _ in exceptions:
-                result.add(exc)
+
+        exceptions = _extract_starlette_exceptions(
+            this_route, this_func_target_module + ["fastapi"]
+        )
+        for exc, _ in exceptions:
+            result.add(exc)
 
     return result
 
