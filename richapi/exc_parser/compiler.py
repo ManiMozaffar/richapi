@@ -6,11 +6,30 @@ import sysconfig
 import typing
 from importlib.util import find_spec
 from types import ModuleType
-from typing import Annotated, Callable, Generic, List, NewType, Optional, Tuple, Union
+from typing import (
+    Annotated,
+    Callable,
+    Generic,
+    NamedTuple,
+    NewType,
+    Optional,
+    Union,
+)
 
 import typing_extensions
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
+
+
+class RaisedExceptionInfo(NamedTuple):
+    exception: type[Exception] | None
+    raise_ast: ast.Raise
+
+
+class RaisedHTTPExceptionInfo(NamedTuple):
+    exception: type[StarletteHTTPException]
+    raise_ast: ast.Raise
 
 
 def not_supported(
@@ -80,7 +99,7 @@ def find_explicit_exceptions(
     func: Callable,
     target_modules: list[str],
     should_search_module_pred: Union[Callable[[str], bool], None] = None,
-) -> List[Tuple[Optional[type[Exception]], ast.Raise]]:
+) -> list[RaisedExceptionInfo]:
     """
     Analyze the given function and find all explicitly raised exceptions,
     including those in nested functions and class methods.
@@ -140,7 +159,7 @@ def _find_all_class_exceptions(
         and n.name == "__init__",
     )
 
-    result: list[tuple[Optional[type[Exception]], ast.Raise]] = []
+    result: list[RaisedExceptionInfo] = []
     if init_tree is not None:
         result.extend(
             _find_explicit_expection_recursively(
@@ -180,7 +199,7 @@ def _find_explicit_expection_recursively(
     func_obj: Callable,
     to_filter_predicate: Callable[[str], bool],
     tree: ast.AST,
-) -> list[tuple[Optional[type[Exception]], ast.Raise]]:
+) -> list[RaisedExceptionInfo]:
     if func_obj in ExceptionFinder.visited:
         return ExceptionFinder.visited[func_obj]
 
@@ -482,12 +501,12 @@ def is_stdlib(module_name: str) -> bool:
 
 
 class ExceptionFinder(ast.NodeVisitor):
-    visited: dict[Callable, list[tuple[Optional[type[Exception]], ast.Raise]]] = {}
+    visited: dict[Callable, list[RaisedExceptionInfo]] = {}
 
     def __init__(
         self, func: Callable, should_search_module_pred: Callable[[str], bool]
     ):
-        self.exceptions: list[tuple[Optional[type[Exception]], ast.Raise]] = []
+        self.exceptions: list[RaisedExceptionInfo] = []
         self.assignments: dict[NodeIdentifier, str] = {}
         # self.cached_assignments[func] = self.assignments
         self.func = func
@@ -497,6 +516,10 @@ class ExceptionFinder(ast.NodeVisitor):
     @classmethod
     def clear_cache(cls):
         cls.visited.clear()
+
+    def populate_cache_if_not_exists(self, func_obj: Callable):
+        if func_obj not in ExceptionFinder.visited:
+            ExceptionFinder.visited[func_obj] = []
 
     def _should_be_visited(
         self, module: ModuleType
@@ -570,7 +593,7 @@ class ExceptionFinder(ast.NodeVisitor):
             # Could not resolve exception name -> maybe just using 'raise' without an exception
             # this edge case basically can raise anything
             logger.debug("Please don't use 'raise' without declaring what to raise")
-            self.exceptions.append((None, node))
+            self.exceptions.append(RaisedExceptionInfo(None, node))
             self.generic_visit(node)
             return
 
@@ -580,7 +603,7 @@ class ExceptionFinder(ast.NodeVisitor):
         if exc_variable_name is None:
             # We are raising an exception that is assigned to a variable we don't know
             # Maybe global variable ?
-            self.exceptions.append((None, node))
+            self.exceptions.append(RaisedExceptionInfo(None, node))
             self.generic_visit(node)
             logger.debug(f"Failed to get exception name: {ast.dump(node)}")
             return
@@ -588,7 +611,7 @@ class ExceptionFinder(ast.NodeVisitor):
         exc_type = _exctact_type(exc_variable_name, self.func.__globals__)
 
         if exc_type:
-            self.exceptions.append((exc_type, node))
+            self.exceptions.append(RaisedExceptionInfo(exc_type, node))
 
         self.generic_visit(node)
         return
@@ -598,6 +621,7 @@ class ExceptionFinder(ast.NodeVisitor):
         Handle function calls and recursively analyze called functions.
         """
         func_objs = _resolve_functions_from_call_node(node, self.func, self.assignments)
+
         for func_obj in func_objs:
             if inspect.isfunction(func_obj):
                 module = inspect.getmodule(func_obj)
@@ -638,8 +662,10 @@ class ExceptionFinder(ast.NodeVisitor):
                     func_obj, self.should_search_module_pred
                 )
                 self.exceptions.extend(_excs)
+                self.populate_cache_if_not_exists(func_obj)
 
         self.generic_visit(node)
+        self.populate_cache_if_not_exists(self.func)
         return
 
     def visit_Attribute(self, node):
