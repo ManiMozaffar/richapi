@@ -3,6 +3,7 @@ import inspect
 import typing
 from functools import reduce
 from logging import getLogger
+from types import NoneType
 from typing import Callable, Union
 
 import fastapi
@@ -14,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from richapi.exc_parser.compiler import (
     ExceptionFinder,
+    RaisedHTTPExceptionInfo,
 )
 from richapi.exc_parser.compiler import (
     find_explicit_exceptions as _find_explicit_exceptions,
@@ -47,7 +49,6 @@ def enrich_openapi(
 ) -> Callable:
     if target_module is None:
         target_module = _find_module_name_where_app_defined_in(app)
-
         if target_module is None or target_module == "__main__":
             raise BaseRichAPIException(
                 "Could not determine the module where the FastAPI instance was created.\n"
@@ -81,7 +82,6 @@ def compile_openapi_from_fastapi(
 ) -> dict:
     target_module = [target_module] if isinstance(target_module, str) else target_module
     target_module.append("fastapi")
-
     openapi_schema = open_api_getter(app)
     for route in app.routes:
         if not isinstance(route, APIRoute):
@@ -138,7 +138,19 @@ def _resolve_status_and_detail_from_exc_type(
                 status_code_value = kwarg.value
 
                 if isinstance(status_code_value, ast.Constant):
-                    found_status_code: Union[int, None] = int(status_code_value.value)
+                    if not isinstance(
+                        status_code_value.value,
+                        (int, str, NoneType),
+                    ):
+                        raise ValueError(
+                            f"Status code value must be an integer, string or None, got {type(status_code_value.value)}"
+                        )
+                    if status_code_value.value is not None:
+                        found_status_code = int(status_code_value.value)
+
+                    assert isinstance(
+                        status_code_value.value, (str, bytes, bool, int, float)
+                    )
 
                 elif isinstance(status_code_value, ast.Attribute):
                     # maybe used like: status.HTTP_404_NOT_FOUND
@@ -153,6 +165,11 @@ def _resolve_status_and_detail_from_exc_type(
             elif kwarg.arg == "detail":
                 detail_value = kwarg.value
                 if isinstance(detail_value, ast.Constant):
+                    if not isinstance(detail_value.value, (str, NoneType)):
+                        raise ValueError(
+                            f"Detail value must be a string or None, got {type(detail_value.value)}"
+                        )
+
                     found_detail: Union[str, None] = detail_value.value
 
             else:
@@ -219,7 +236,7 @@ def _extract_json_schema(
 def _fill_openapi_with_excpetions(
     api_schema: dict,
     route: APIRoute,
-    exceptions: list[tuple[type[StarletteHTTPException], ast.Raise]],
+    exceptions: list[RaisedHTTPExceptionInfo],
 ) -> None:
     added_schema_names = set()
 
@@ -307,19 +324,25 @@ def flatten(to_be_flatten: list[list[T]]) -> list[T]:
 
 def _extract_starlette_exceptions(
     route: APIRoute, target_module: list[str]
-) -> list[tuple[type[StarletteHTTPException], ast.Raise]]:
+) -> list[RaisedHTTPExceptionInfo]:
     dependency_tree = build_dependency_tree(route.dependant)
     exceptions = flatten(
         [_find_explicit_exceptions(dep, target_module) for dep in dependency_tree]
     )
 
-    starlette_http_exc_types = [
-        exc
-        for exc in exceptions
-        if exc[0] is not None and issubclass(exc[0], StarletteHTTPException)
-    ]
-    casted_exceptions = typing.cast(
-        list[tuple[type[StarletteHTTPException], ast.Raise]],
-        starlette_http_exc_types,
-    )
-    return casted_exceptions
+    result: list[RaisedHTTPExceptionInfo] = []
+    for exc in exceptions:
+        if exc.exception is None:
+            logger.debug(
+                f"Could not resolve exception type for {ast.dump(exc.raise_ast)}"
+            )
+            continue
+        if not issubclass(exc.exception, StarletteHTTPException):
+            logger.debug(
+                f"Skipping non-StarletteHTTPException exception: {exc.exception}"
+            )
+            continue
+
+        result.append(RaisedHTTPExceptionInfo(exc.exception, exc.raise_ast))
+
+    return result
