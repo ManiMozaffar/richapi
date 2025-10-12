@@ -37,6 +37,38 @@ def load_openapi(
     return lambda: openapi_json
 
 
+def _validate_target_module(
+    target_module: Union[list[str], str, None],
+    target_obj: FastAPI | Callable,
+) -> list[str]:
+    if target_module is not None:
+        return [target_module] if isinstance(target_module, str) else target_module
+
+    if isinstance(target_obj, FastAPI):
+        target_module = _find_module_name_where_app_defined_in(target_obj)
+    else:
+        target_module = _find_module_name_where_func_defined_in(target_obj)
+
+    if target_module is not None:
+        target_module = target_module.split(".")[0]  # get the top-level module
+
+    if target_module is None or target_module == "__main__":
+        if isinstance(target_obj, FastAPI):
+            raise BaseRichAPIException(
+                "Could not determine the module where the FastAPI instance was created.\n"
+                "Please provide the module name as a string or list of strings.\n"
+                "Example: enrich_openapi(app, target_module='src')\n"
+            )
+        else:
+            raise BaseRichAPIException(
+                "Could not determine the module where the function was created.\n"
+                "Please provide the module name as a string or list of strings.\n"
+                "Example: find_exceptions_in_api_functions([func], target_module='src')\n"
+            )
+
+    return [target_module]
+
+
 def enrich_openapi(
     app: FastAPI,
     target_module: Union[list[str], str, None] = None,
@@ -47,16 +79,7 @@ def enrich_openapi(
         routes=app.routes,
     ),
 ) -> Callable:
-    if target_module is None:
-        target_module = _find_module_name_where_app_defined_in(app)
-        if target_module is None or target_module == "__main__":
-            raise BaseRichAPIException(
-                "Could not determine the module where the FastAPI instance was created.\n"
-                "Please provide the module name as a string or list of strings.\n"
-                "Example: enrich_openapi(app, target_module='src')\n"
-            )
-
-        target_module = target_module.split(".")[0]  # get the top-level module
+    target_module = _validate_target_module(target_module, app)
 
     def _custom_openapi() -> dict:
         if app.openapi_schema:  # pragma: no cover
@@ -72,7 +95,7 @@ def enrich_openapi(
 
 def compile_openapi_from_fastapi(
     app: FastAPI,
-    target_module: Union[list[str], str],
+    target_module: list[str] | str,
     open_api_getter: Callable[[FastAPI], dict] = lambda app: _get_openapi(
         title=app.title,
         version=app.version,
@@ -81,20 +104,58 @@ def compile_openapi_from_fastapi(
     ),
 ) -> dict:
     target_module = [target_module] if isinstance(target_module, str) else target_module
-    target_module.append("fastapi")
+
     openapi_schema = open_api_getter(app)
     for route in app.routes:
         if not isinstance(route, APIRoute):
             continue
 
         if route.include_in_schema:
-            exceptions = _extract_starlette_exceptions(route, target_module)
-
+            exceptions = _extract_starlette_exceptions(
+                route, target_module + ["fastapi"]
+            )
             _fill_openapi_with_excpetions(openapi_schema, route, exceptions)
 
     ExceptionFinder.clear_cache()
 
     return openapi_schema
+
+
+def _find_fastapi_route_from_callback(
+    app: FastAPI, callback: Callable
+) -> Union[APIRoute, None]:
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if route.endpoint is callback:
+            return route
+
+    return None
+
+
+def find_exceptions_in_api_functions(
+    funcs: list[Callable],
+    fastapi_app: FastAPI,
+    target_module: str | list[str] | None = None,
+) -> set[type[StarletteHTTPException]]:
+    result: set[type[StarletteHTTPException]] = set()
+    for func in funcs:
+        this_func_target_module = _validate_target_module(target_module, func)
+
+        if fastapi_app is not None:
+            this_route = _find_fastapi_route_from_callback(fastapi_app, func)
+            if this_route is None:
+                raise BaseRichAPIException(
+                    f"Could not find the route for function {func} in FastAPI app {fastapi_app}"
+                )
+
+            exceptions = _extract_starlette_exceptions(
+                this_route, this_func_target_module + ["fastapi"]
+            )
+            for exc, _ in exceptions:
+                result.add(exc)
+
+    return result
 
 
 def _find_module_name_where_app_defined_in(app: FastAPI) -> Union[str, None]:
@@ -103,6 +164,21 @@ def _find_module_name_where_app_defined_in(app: FastAPI) -> Union[str, None]:
     while frame:
         for var_name, var_value in frame.f_globals.items():
             if isinstance(var_value, FastAPI) and var_value is app:
+                target_module = frame.f_globals["__name__"]
+                break
+        if target_module:
+            break
+        frame = frame.f_back
+
+    return target_module
+
+
+def _find_module_name_where_func_defined_in(func: Callable) -> Union[str, None]:
+    frame = inspect.currentframe()
+    target_module = None
+    while frame:
+        for var_name, var_value in frame.f_globals.items():
+            if isinstance(var_value, Callable) and var_value is func:
                 target_module = frame.f_globals["__name__"]
                 break
         if target_module:
@@ -142,7 +218,7 @@ def _resolve_status_and_detail_from_exc_type(
                         status_code_value.value,
                         (int, str, NoneType),
                     ):
-                        raise ValueError(
+                        raise BaseRichAPIException(
                             f"Status code value must be an integer, string or None, got {type(status_code_value.value)}"
                         )
                     if status_code_value.value is not None:
@@ -166,7 +242,7 @@ def _resolve_status_and_detail_from_exc_type(
                 detail_value = kwarg.value
                 if isinstance(detail_value, ast.Constant):
                     if not isinstance(detail_value.value, (str, NoneType)):
-                        raise ValueError(
+                        raise BaseRichAPIException(
                             f"Detail value must be a string or None, got {type(detail_value.value)}"
                         )
 
