@@ -49,3 +49,27 @@ app = FastAPI()
 # add your routers ....
 app.openapi = enrich_openapi(app, ["your_module_name", "some-other-package"])
 ```
+
+### Finding exceptions in specific API functions of FastAPI
+
+If you want to limit the search of exceptions to specific functions, you can pass the list of functions to the `find_exceptions_in_api_functions` function.
+
+```python
+from richapi import find_exceptions_in_api_functions, BaseHTTPException
+from fastapi import FastAPI
+
+app = FastAPI()
+
+class NotFoundException(BaseHTTPException):
+    status_code = 404
+    detail: str = "Item not found"
+
+@app.get("/items/{item_id}")
+async def read_item(item_id: int):
+    if item_id != 42:
+        raise NotFoundException()
+    return {"item_id": item_id}
+
+exceptions = find_exceptions_in_api_functions(funcs=[read_item], fastapi_app=app)
+print(exceptions)  # {NotFoundException}
+```
