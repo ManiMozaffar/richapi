@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from typing import Any, ClassVar, Literal
 
 from fastapi import HTTPException
@@ -44,20 +45,26 @@ class RichHTTPException(HTTPException):
 
     @classmethod
     def get_json_schema(cls) -> HTTPExceptionSchema:
-        adapter = TypeAdapter(cls)
-        schema = adapter.json_schema()
-        schema.pop("status_code", None)
+        # Building a TypeAdapter is expensive; build once per class, hand out copies.
+        return _rich_json_schema(cls).model_copy(deep=True)
 
-        schema_desc = cls.__doc__
-        if schema_desc == cls.__name__ + "()" or schema_desc is None:
-            schema_desc = "No description provided"
 
-        return HTTPExceptionSchema(
-            response_schema_json=schema,
-            schema_name=f"{cls.__name__}Schema",
-            status_code=cls.status_code,
-            schema_desc=schema_desc,
-        )
+@functools.lru_cache(maxsize=None)
+def _rich_json_schema(cls: type[RichHTTPException]) -> HTTPExceptionSchema:
+    adapter = TypeAdapter(cls)
+    schema = adapter.json_schema()
+    schema.pop("status_code", None)
+
+    schema_desc = cls.__doc__
+    if schema_desc == cls.__name__ + "()" or schema_desc is None:
+        schema_desc = "No description provided"
+
+    return HTTPExceptionSchema(
+        response_schema_json=schema,
+        schema_name=f"{cls.__name__}Schema",
+        status_code=cls.status_code,
+        schema_desc=schema_desc,
+    )
 
 
 def try_to_camel_case(string: str) -> str:
@@ -78,6 +85,28 @@ def try_to_camel_case(string: str) -> str:
 
 
 def _generic_json_schema_builder(
+    cls: type[Exception],
+    detail: str | None = None,
+    status_code: int | None = None,
+) -> HTTPExceptionSchema | None:
+    try:
+        hash((cls, detail, status_code))
+    except TypeError:  # e.g. dict detail, can't be cached
+        return _build_generic_json_schema(cls, detail, status_code)
+
+    # create_model() is expensive and the same exception is seen over and over; build once, hand out copies.
+    schema = _cached_generic_json_schema(cls, detail, status_code)
+    return None if schema is None else schema.model_copy(deep=True)
+
+
+@functools.lru_cache(maxsize=4096)
+def _cached_generic_json_schema(
+    cls: type[Exception], detail: str | None, status_code: int | None
+) -> HTTPExceptionSchema | None:
+    return _build_generic_json_schema(cls, detail, status_code)
+
+
+def _build_generic_json_schema(
     cls: type[Exception],
     detail: str | None = None,
     status_code: int | None = None,

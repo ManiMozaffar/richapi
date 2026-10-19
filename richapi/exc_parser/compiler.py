@@ -1,7 +1,9 @@
 import ast
 import builtins
+import functools
 import inspect
 import logging
+import sys
 import sysconfig
 import typing
 from importlib.util import find_spec
@@ -79,6 +81,68 @@ def is_in_module(module: str, target_modules: list[str]) -> bool:
     return False
 
 
+_tree_cache: dict = {}
+_def_index_cache: dict[int, tuple[ast.AST, dict[tuple[str, str], ast.AST]]] = {}
+
+
+def _parse_source(obj) -> ast.Module:
+    """`ast.parse(inspect.getsource(obj))`, cached per object until `ExceptionFinder.clear_cache()`."""
+    try:
+        return _tree_cache[obj]
+    except KeyError:
+        pass
+    except TypeError:  # unhashable object, don't cache
+        return ast.parse(_getsource(obj))
+
+    tree = ast.parse(_getsource(obj))
+    _tree_cache[obj] = tree
+    return tree
+
+
+def _getsource(obj) -> str:
+    """
+    Same as `inspect.getsource(obj)`. Before Python 3.13, `getsource(cls)` parses the class's whole
+    module on every call to locate it; this runs the same stdlib lookup on the cached module tree.
+    """
+    class_finder = getattr(inspect, "_ClassFinder", None)
+    found_exc = getattr(inspect, "ClassFoundException", None)
+    if (
+        sys.version_info >= (3, 13)
+        or class_finder is None
+        or found_exc is None
+        or not inspect.isclass(obj)
+        or (module := inspect.getmodule(obj)) is None
+    ):
+        return inspect.getsource(obj)
+
+    try:
+        lines, _ = inspect.findsource(module)
+        class_finder(obj.__qualname__).visit(_parse_source(module))
+    except found_exc as found:
+        return "".join(inspect.getblock(lines[found.args[0] :]))
+    except Exception:
+        pass
+    return inspect.getsource(obj)  # not found / anything odd: let stdlib decide
+
+
+def _find_def(tree: ast.AST, kind: str, name: str) -> Optional[ast.AST]:
+    """
+    Same result as `_find_in_module` looking for a function ("func") or class ("class") by name,
+    but walks each tree only once and then answers from an index.
+    """
+    entry = _def_index_cache.get(id(tree))
+    if entry is None or entry[0] is not tree:
+        index: dict[tuple[str, str], ast.AST] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                index.setdefault(("func", node.name), node)
+            elif isinstance(node, ast.ClassDef):
+                index.setdefault(("class", node.name), node)
+        entry = (tree, index)
+        _def_index_cache[id(tree)] = entry
+    return entry[1].get((kind, name))
+
+
 def _get_tree(obj: Callable):
     to_search = obj
     if is_absolutely_callable_object(obj):
@@ -87,8 +151,7 @@ def _get_tree(obj: Callable):
         )
 
     try:
-        tree = ast.parse(inspect.getsource(to_search))
-        return tree
+        return _parse_source(to_search)
     except Exception as error:
         obj_name = obj.__name__ if hasattr(obj, "__name__") else obj.__str__()
         logger.debug(f"Failed to parse source code for {obj_name}", exc_info=error)
@@ -143,7 +206,7 @@ def _find_all_class_exceptions(
         return []
 
     try:
-        cls_tree = ast.parse(inspect.getsource(cls))
+        cls_tree = _parse_source(cls)
     except Exception as error:
         cls_name = cls.__name__ if hasattr(cls, "__name__") else cls.__str__()
         logger.info(
@@ -151,13 +214,7 @@ def _find_all_class_exceptions(
         )
         return []
 
-    init_tree = _find_in_module(
-        cls_tree,
-        lambda n: (
-            isinstance(n, ast.AsyncFunctionDef) or isinstance(n, ast.FunctionDef)
-        )
-        and n.name == "__init__",
-    )
+    init_tree = _find_def(cls_tree, "func", "__init__")
 
     result: list[RaisedExceptionInfo] = []
     if init_tree is not None:
@@ -169,13 +226,7 @@ def _find_all_class_exceptions(
 
     if hasattr(cls, "__call__"):
         # Not sure if __call__ was called or init, so check for both
-        call_tree = _find_in_module(
-            cls_tree,
-            lambda n: (
-                isinstance(n, ast.AsyncFunctionDef) or isinstance(n, ast.FunctionDef)
-            )
-            and n.name == "__call__",
-        )
+        call_tree = _find_def(cls_tree, "func", "__call__")
 
         if call_tree is not None:
             result.extend(
@@ -213,6 +264,8 @@ def _find_explicit_expection_recursively(
         )
         return _find_all_class_exceptions(class_type, to_filter_predicate)
 
+    # Mark as in-progress so (mutually) recursive calls stop here instead of recursing until RecursionError.
+    ExceptionFinder.visited[func_obj] = []
     finder = ExceptionFinder(func_obj, to_filter_predicate)
     try:
         finder.visit(tree)
@@ -399,9 +452,11 @@ def _resolve_functions_from_call_node(
 
                     return results
 
-                logger.debug(
-                    f"Failed to resolve parent attribute {parent_part} for parts {attr_chain}. Chain: {ast.dump(node)} for func {func.__name__}"
-                )
+                # ast.dump is costly and this path is hot
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"Failed to resolve parent attribute {parent_part} for parts {attr_chain}. Chain: {ast.dump(node)} for func {func.__name__}"
+                    )
                 return []
 
             parent_attr = _resolve_type_from_assigment(parent_attr, assignments, func)
@@ -456,12 +511,17 @@ def _extract_node_name(
         return None
 
 
+@functools.lru_cache(maxsize=4096)
+def _compile_expr(expr: str):
+    return compile(expr, "<string>", "eval")
+
+
 def _exctact_type(var_tyep: str, func_globals: dict) -> Optional[type]:
     """
     Attempt to resolve the exception name to an actual exception class.
     """
     try:
-        exc_type = eval(var_tyep, func_globals)
+        exc_type = eval(_compile_expr(var_tyep), func_globals)
         if isinstance(exc_type, type) and issubclass(exc_type, BaseException):
             return exc_type
     except BaseException:
@@ -487,6 +547,12 @@ def _should_be_visited(
     return True
 
 
+@functools.lru_cache(maxsize=None)
+def _stdlib_path() -> str:
+    return sysconfig.get_paths()["stdlib"]
+
+
+@functools.lru_cache(maxsize=None)
 def is_stdlib(module_name: str) -> bool:
     """Check if a given module is part of the Python standard library."""
     try:
@@ -496,8 +562,7 @@ def is_stdlib(module_name: str) -> bool:
 
     if module_spec is None or module_spec.origin is None:
         return False
-    std_lib_paths = sysconfig.get_paths()["stdlib"]
-    return module_spec.origin.startswith(std_lib_paths)
+    return module_spec.origin.startswith(_stdlib_path())
 
 
 class ExceptionFinder(ast.NodeVisitor):
@@ -507,6 +572,9 @@ class ExceptionFinder(ast.NodeVisitor):
         self, func: Callable, should_search_module_pred: Callable[[str], bool]
     ):
         self.exceptions: list[RaisedExceptionInfo] = []
+        # (exception, id(raise_ast)) already in self.exceptions. The same raise reached through many
+        # call paths carries no extra info, and keeping every copy grows exponentially on call diamonds.
+        self._seen: set[tuple] = set()
         self.assignments: dict[NodeIdentifier, str] = {}
         # self.cached_assignments[func] = self.assignments
         self.func = func
@@ -516,6 +584,15 @@ class ExceptionFinder(ast.NodeVisitor):
     @classmethod
     def clear_cache(cls):
         cls.visited.clear()
+        _tree_cache.clear()
+        _def_index_cache.clear()
+
+    def _add_exceptions(self, excs: list[RaisedExceptionInfo]):
+        for exc in excs:
+            key = (exc.exception, id(exc.raise_ast))
+            if key not in self._seen:
+                self._seen.add(key)
+                self.exceptions.append(exc)
 
     def populate_cache_if_not_exists(self, func_obj: Callable):
         if func_obj not in ExceptionFinder.visited:
@@ -593,7 +670,7 @@ class ExceptionFinder(ast.NodeVisitor):
             # Could not resolve exception name -> maybe just using 'raise' without an exception
             # this edge case basically can raise anything
             logger.debug("Please don't use 'raise' without declaring what to raise")
-            self.exceptions.append(RaisedExceptionInfo(None, node))
+            self._add_exceptions([RaisedExceptionInfo(None, node)])
             self.generic_visit(node)
             return
 
@@ -603,15 +680,16 @@ class ExceptionFinder(ast.NodeVisitor):
         if exc_variable_name is None:
             # We are raising an exception that is assigned to a variable we don't know
             # Maybe global variable ?
-            self.exceptions.append(RaisedExceptionInfo(None, node))
+            self._add_exceptions([RaisedExceptionInfo(None, node)])
             self.generic_visit(node)
-            logger.debug(f"Failed to get exception name: {ast.dump(node)}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Failed to get exception name: {ast.dump(node)}")
             return
 
         exc_type = _exctact_type(exc_variable_name, self.func.__globals__)
 
         if exc_type:
-            self.exceptions.append(RaisedExceptionInfo(exc_type, node))
+            self._add_exceptions([RaisedExceptionInfo(exc_type, node)])
 
         self.generic_visit(node)
         return
@@ -628,9 +706,8 @@ class ExceptionFinder(ast.NodeVisitor):
                 if module is None or self._should_be_visited(module) is False:
                     continue
 
-                source = inspect.getsource(module)
                 try:
-                    tree = ast.parse(source)
+                    tree = _parse_source(module)
                 except BaseException as error:
                     logger.exception(
                         f"Failed to parse source code for {func_obj.__name__}.",
@@ -639,19 +716,12 @@ class ExceptionFinder(ast.NodeVisitor):
                     self.generic_visit(node)
                     return
 
-                founded_func_ast = _find_in_module(
-                    tree,
-                    lambda n: (
-                        isinstance(n, ast.AsyncFunctionDef)
-                        or isinstance(n, ast.FunctionDef)
-                    )
-                    and n.name == func_obj.__name__,
-                )
+                founded_func_ast = _find_def(tree, "func", func_obj.__name__)
                 if founded_func_ast:
                     excs = _find_explicit_expection_recursively(
                         func_obj, self.should_search_module_pred, founded_func_ast
                     )
-                    self.exceptions.extend(excs)
+                    self._add_exceptions(excs)
                 else:
                     logger.debug(
                         f"Failed to find function {func_obj.__name__} in module {module.__name__}"
@@ -661,7 +731,7 @@ class ExceptionFinder(ast.NodeVisitor):
                 _excs = _find_all_class_exceptions(
                     func_obj, self.should_search_module_pred
                 )
-                self.exceptions.extend(_excs)
+                self._add_exceptions(_excs)
                 self.populate_cache_if_not_exists(func_obj)
 
         self.generic_visit(node)
@@ -698,9 +768,8 @@ class ExceptionFinder(ast.NodeVisitor):
                 self.generic_visit(node)
                 return
 
-            source = inspect.getsource(module)
             try:
-                tree = ast.parse(source)
+                tree = _parse_source(module)
             except BaseException as error:
                 logger.exception(
                     f"Failed to parse source code for {caller_type.__name__}.",
@@ -709,11 +778,7 @@ class ExceptionFinder(ast.NodeVisitor):
                 self.generic_visit(node)
                 return
 
-            cls_ast = _find_in_module(
-                tree,
-                lambda n: isinstance(n, ast.ClassDef)
-                and n.name == caller_type.__name__,
-            )
+            cls_ast = _find_def(tree, "class", caller_type.__name__)
             if cls_ast:
                 casted_cls_ast = typing.cast(ast.ClassDef, cls_ast)
                 submethod_ast = _find_method_node_in_cls(casted_cls_ast, node.attr)
@@ -721,7 +786,7 @@ class ExceptionFinder(ast.NodeVisitor):
                     excs = _find_explicit_expection_recursively(
                         method_func, self.should_search_module_pred, submethod_ast
                     )
-                    self.exceptions.extend(excs)
+                    self._add_exceptions(excs)
 
         self.generic_visit(node)
         return
