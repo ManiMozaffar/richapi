@@ -106,10 +106,7 @@ def compile_openapi_from_fastapi(
     target_module = [target_module] if isinstance(target_module, str) else target_module
 
     openapi_schema = open_api_getter(app)
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-
+    for route in _iter_api_routes(app):
         if route.include_in_schema:
             exceptions = _extract_starlette_exceptions(
                 route, target_module + ["fastapi"]
@@ -121,12 +118,37 @@ def compile_openapi_from_fastapi(
     return openapi_schema
 
 
+def _iter_api_routes(app: FastAPI) -> typing.Iterator[APIRoute]:
+    """Yield every APIRoute the app serves, as FastAPI's own get_openapi sees it.
+
+    FastAPI < 0.137 copies included routes onto app.routes with the router's
+    prefix and dependencies applied. From 0.137 on, app.routes holds one
+    _IncludedRouter per include_router and the effective routes (prefix,
+    dependencies, include_in_schema merged) are only reachable through it.
+    """
+    routing = fastapi.routing
+    if hasattr(routing, "iter_route_contexts"):  # FastAPI >= 0.137.2
+        pairs = (
+            (ctx.original_route, ctx)
+            for ctx in getattr(routing, "iter_route_contexts")(app.routes)
+        )
+    elif hasattr(routing, "_iter_routes_with_context"):  # FastAPI 0.137.0-0.137.1
+        pairs = (
+            (route, ctx or route)
+            for route, ctx in getattr(routing, "_iter_routes_with_context")(app.routes)
+        )
+    else:
+        pairs = ((route, route) for route in app.routes)
+
+    for original_route, route in pairs:
+        if isinstance(original_route, APIRoute):
+            yield typing.cast(APIRoute, route)
+
+
 def _find_fastapi_route_from_callback(
     app: FastAPI, callback: Callable
 ) -> Union[APIRoute, None]:
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in _iter_api_routes(app):
         if route.endpoint is callback:
             return route
 
@@ -338,7 +360,7 @@ def _fill_openapi_with_excpetions(
                 schema.response_schema_json
             )
 
-        path = route.path
+        path = route.path_format  # the key FastAPI's get_openapi uses
         methods = [method.lower() for method in getattr(route, "methods")]
 
         for method in methods:
