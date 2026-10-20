@@ -96,22 +96,47 @@ def _parse_source(obj) -> ast.Module:
     except TypeError:  # unhashable object, don't cache
         return ast.parse(_getsource(obj))
 
-    tree = ast.parse(_getsource(obj))
+    tree = _top_level_class_tree(obj) if inspect.isclass(obj) else None
+    if tree is None:
+        tree = ast.parse(_getsource(obj))
     _tree_cache[obj] = tree
     return tree
 
 
+def _top_level_class_tree(cls: type) -> Optional[ast.Module]:
+    """
+    For a class defined at the top level of its module, what `ast.parse(inspect.getsource(cls))`
+    would produce, built from the already parsed module instead of re-tokenizing and re-parsing.
+    None means: use the regular path (nested classes, odd cases, errors).
+    """
+    module = inspect.getmodule(cls)
+    if module is None:
+        return None
+    try:
+        module_tree = _parse_source(module)
+        if sys.version_info >= (3, 13):  # where inspect.getsource(cls) starts on 3.13+
+            first_line = vars(cls).get("__firstlineno__")
+            start = None if first_line is None else first_line - 1
+        else:
+            start = _class_line_index(module_tree).get(cls.__qualname__)
+    except Exception:
+        return None
+
+    for node in getattr(module_tree, "body", ()):
+        if isinstance(node, ast.ClassDef):
+            first = node.decorator_list[0] if node.decorator_list else node
+            if first.lineno - 1 == start:
+                return ast.Module(body=[node], type_ignores=[])
+    return None
+
+
 def _getsource(obj) -> str:
     """
-    Same as `inspect.getsource(obj)`. Before Python 3.13, `getsource(cls)` parses the class's whole
-    module on every call to locate it; this runs the same stdlib lookup on the cached module tree.
+    Same as `inspect.getsource(obj)`. Before Python 3.13, `getsource(cls)` re-parses and walks the
+    class's whole module for every class; this looks classes up in a per-module index instead.
     """
-    class_finder = getattr(inspect, "_ClassFinder", None)
-    found_exc = getattr(inspect, "ClassFoundException", None)
     if (
         sys.version_info >= (3, 13)
-        or class_finder is None
-        or found_exc is None
         or not inspect.isclass(obj)
         or (module := inspect.getmodule(obj)) is None
     ):
@@ -119,16 +144,59 @@ def _getsource(obj) -> str:
 
     try:
         lines, _ = inspect.findsource(module)
+        line_number = _class_line_index(_parse_source(module)).get(obj.__qualname__)
     except Exception:
-        return inspect.getsource(obj)  # let stdlib decide (or raise)
+        return inspect.getsource(obj)  # anything odd: let stdlib decide (or raise)
+    if line_number is None:
+        return inspect.getsource(obj)  # not found: let stdlib decide (or raise)
+    return "".join(inspect.getblock(lines[line_number:]))
 
-    try:
-        class_finder(obj.__qualname__).visit(_parse_source(module))
-    except found_exc as found:
-        return "".join(inspect.getblock(lines[found.args[0] :]))
-    except Exception:
-        pass
-    return inspect.getsource(obj)  # not found / anything odd: let stdlib decide
+
+_class_line_cache: dict[int, tuple[ast.AST, dict[str, int]]] = {}
+
+
+def _child_nodes(node: ast.AST) -> list[ast.AST]:
+    """`ast.iter_child_nodes` order, minus leaf nodes (`_LEAF_NODE_TYPES`), without its generators."""
+    children: list[ast.AST] = []
+    for field in node._fields:
+        value = getattr(node, field, None)
+        if isinstance(value, list):
+            children.extend(
+                item
+                for item in value
+                if isinstance(item, ast.AST) and type(item) not in _LEAF_NODE_TYPES
+            )
+        elif isinstance(value, ast.AST) and type(value) not in _LEAF_NODE_TYPES:
+            children.append(value)
+    return children
+
+
+def _class_line_index(tree: ast.AST) -> dict[str, int]:
+    """
+    qualname -> 0-based first line of the class, following `inspect._ClassFinder` (Python 3.10-3.12):
+    first match in traversal order, decorators included, functions add a `<locals>` level.
+    """
+    entry = _class_line_cache.get(id(tree))
+    if entry is not None and entry[0] is tree:
+        return entry[1]
+
+    index: dict[str, int] = {}
+
+    def walk(node: ast.AST, stack: list[str]):
+        for child in _child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, [*stack, child.name, "<locals>"])
+            elif isinstance(child, ast.ClassDef):
+                inner = [*stack, child.name]
+                first = child.decorator_list[0] if child.decorator_list else child
+                index.setdefault(".".join(inner), first.lineno - 1)
+                walk(child, inner)
+            else:
+                walk(child, stack)
+
+    walk(tree, [])
+    _class_line_cache[id(tree)] = (tree, index)
+    return index
 
 
 _returned_exc_cache: dict = {}
@@ -142,11 +210,14 @@ def _find_def(tree: ast.AST, kind: str, name: str) -> Optional[ast.AST]:
     entry = _def_index_cache.get(id(tree))
     if entry is None or entry[0] is not tree:
         index: dict[tuple[str, str], ast.AST] = {}
-        for node in ast.walk(tree):
+        todo = collections.deque([tree])  # breadth-first, same order as ast.walk
+        while todo:
+            node = todo.popleft()
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 index.setdefault(("func", node.name), node)
             elif isinstance(node, ast.ClassDef):
                 index.setdefault(("class", node.name), node)
+            todo.extend(_child_nodes(node))
         entry = (tree, index)
         _def_index_cache[id(tree)] = entry
     return entry[1].get((kind, name))
@@ -613,8 +684,68 @@ def is_stdlib(module_name: str) -> bool:
     return module_spec.origin.startswith(_stdlib_path())
 
 
+def _concrete_subclasses(*bases: type) -> set[type]:
+    found: set[type] = set()
+    stack = list(bases)
+    while stack:
+        cls = stack.pop()
+        stack.extend(cls.__subclasses__())
+        found.add(cls)
+    return found
+
+
+# Nodes that never hold another node worth visiting (Name only holds its Load/Store context).
+# Without a visit_<Type> handler there is nothing to do in them, so traversal skips them.
+_LEAF_NODE_TYPES = frozenset(
+    _concrete_subclasses(
+        ast.expr_context, ast.boolop, ast.operator, ast.unaryop, ast.cmpop
+    )
+    | {ast.Name, ast.Constant, ast.Pass, ast.Break, ast.Continue, ast.alias}
+)
+_LEGACY_CONSTANT_VISITORS = (
+    "visit_Num",
+    "visit_Str",
+    "visit_Bytes",
+    "visit_NameConstant",
+    "visit_Ellipsis",
+)
+
+
+@functools.lru_cache(maxsize=None)
+def _node_handler(visitor_cls: type, node_cls: type) -> Optional[Callable]:
+    """The visit_<Type> method `ast.NodeVisitor.visit` would pick, or None for generic_visit."""
+    name = "visit_" + node_cls.__name__
+    handler = getattr(visitor_cls, name, None)
+    base_handler = getattr(ast.NodeVisitor, name, None)
+    # NodeVisitor.visit_Constant only forwards to the deprecated visit_Num & co (Python < 3.14).
+    if handler is not None and handler is base_handler:
+        if not any(hasattr(visitor_cls, n) for n in _LEGACY_CONSTANT_VISITORS):
+            return None
+    return handler
+
+
 class ExceptionFinder(ast.NodeVisitor):
     visited: dict[Callable, list[RaisedExceptionInfo]] = {}
+
+    # Same traversal order and dispatch as ast.NodeVisitor, minus its per-node string building,
+    # getattr and generator overhead, and minus descending into leaf nodes. This is the hot loop.
+    def visit(self, node):
+        handler = _node_handler(type(self), type(node))
+        if handler is not None:
+            return handler(self, node)
+        if type(node) not in _LEAF_NODE_TYPES:
+            self.generic_visit(node)
+
+    def generic_visit(self, node):
+        visit = self.visit
+        for field in node._fields:
+            value = getattr(node, field, None)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, ast.AST):
+                        visit(item)
+            elif isinstance(value, ast.AST):
+                visit(value)
 
     def __init__(
         self, func: Callable, should_search_module_pred: Callable[[str], bool]
@@ -634,6 +765,7 @@ class ExceptionFinder(ast.NodeVisitor):
         cls.visited.clear()
         _tree_cache.clear()
         _def_index_cache.clear()
+        _class_line_cache.clear()
         _returned_exc_cache.clear()
 
     def _add_exceptions(self, excs: list[RaisedExceptionInfo]):
