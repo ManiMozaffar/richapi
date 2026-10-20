@@ -1,10 +1,12 @@
 import ast
 import builtins
+import collections
 import functools
 import inspect
 import logging
 import sys
 import sysconfig
+import textwrap
 import typing
 from importlib.util import find_spec
 from types import ModuleType
@@ -127,6 +129,9 @@ def _getsource(obj) -> str:
     except Exception:
         pass
     return inspect.getsource(obj)  # not found / anything odd: let stdlib decide
+
+
+_returned_exc_cache: dict = {}
 
 
 def _find_def(tree: ast.AST, kind: str, name: str) -> Optional[ast.AST]:
@@ -280,6 +285,45 @@ def _find_explicit_expection_recursively(
 
     ExceptionFinder.visited[func_obj] = finder.exceptions
     return finder.exceptions
+
+
+def _returned_exceptions(func: Callable) -> list[RaisedExceptionInfo]:
+    """
+    Exceptions `func` builds and returns (`return HTTPException(...)`), so `raise func()` resolves.
+    Each one points at a synthetic `raise <returned call>` node, so status/detail extraction reads
+    the returned call's arguments. Returns inside nested functions/classes are ignored.
+    """
+    func = getattr(func, "__func__", func)  # bound method -> function
+    if not inspect.isfunction(func):
+        return []
+    if func in _returned_exc_cache:
+        return _returned_exc_cache[func]
+
+    result: list[RaisedExceptionInfo] = []
+    _returned_exc_cache[func] = result
+    try:
+        func_ast = ast.parse(textwrap.dedent(inspect.getsource(func))).body[0]
+    except Exception as error:
+        logger.debug(f"Failed to parse source code for {func.__name__}", exc_info=error)
+        return result
+
+    todo = collections.deque(getattr(func_ast, "body", []))
+    while todo:
+        node = todo.popleft()
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Call):
+            exc_name = _extract_node_name(node.value, {})
+            exc_type = exc_name and _exctact_type(exc_name, func.__globals__)
+            if exc_type:
+                raise_ast = ast.copy_location(
+                    ast.Raise(exc=node.value, cause=None), node
+                )
+                result.append(RaisedExceptionInfo(exc_type, raise_ast))
+        todo.extend(ast.iter_child_nodes(node))
+    return result
 
 
 def _find_in_module(module: ast.Module, predicate: Callable[[ast.AST], bool]):
@@ -590,6 +634,7 @@ class ExceptionFinder(ast.NodeVisitor):
         cls.visited.clear()
         _tree_cache.clear()
         _def_index_cache.clear()
+        _returned_exc_cache.clear()
 
     def _add_exceptions(self, excs: list[RaisedExceptionInfo]):
         for exc in excs:
@@ -694,9 +739,39 @@ class ExceptionFinder(ast.NodeVisitor):
 
         if exc_type:
             self._add_exceptions([RaisedExceptionInfo(exc_type, node)])
+        elif isinstance(exc, ast.Call):
+            # raise make_error() / raise self.make_error(): the callee returns the exception
+            for callee in self._resolve_raised_callees(exc):
+                self._add_exceptions(_returned_exceptions(callee))
 
         self.generic_visit(node)
         return
+
+    def _resolve_raised_callees(self, call: ast.Call) -> list[Callable]:
+        callees = _resolve_functions_from_call_node(call, self.func, self.assignments)
+        func_node = call.func
+        if (
+            not callees
+            and isinstance(func_node, ast.Attribute)
+            and isinstance(func_node.value, ast.Name)
+            and func_node.value.id in ("self", "cls")
+        ):
+            # self.method(): look it up (MRO included) on the class self.func is defined in
+            qual_names = getattr(self.func, "__qualname__", "").split(".")
+            owner = (
+                self.func.__globals__.get(qual_names[-2])
+                if len(qual_names) > 1
+                else None
+            )
+            callee = getattr(owner, func_node.attr, None)
+            callees = [callee] if callee is not None else []
+
+        result = []
+        for callee in callees:
+            module = inspect.getmodule(callee)
+            if module is not None and self._should_be_visited(module):
+                result.append(callee)
+        return result
 
     def visit_Call(self, node):
         """
