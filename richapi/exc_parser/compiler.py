@@ -145,9 +145,9 @@ def _getsource(obj) -> str:
         lines, _ = inspect.findsource(module)
         line_number = _class_line_index(_parse_source(module)).get(obj.__qualname__)
     except Exception:
-        line_number = None
+        return inspect.getsource(obj)  # anything odd: let stdlib decide (or raise)
     if line_number is None:
-        return inspect.getsource(obj)  # not found / anything odd: let stdlib decide
+        return inspect.getsource(obj)  # not found: let stdlib decide (or raise)
     return "".join(inspect.getblock(lines[line_number:]))
 
 
