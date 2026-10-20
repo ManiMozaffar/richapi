@@ -27,4 +27,6 @@ def test_fastapi_call_detected():
         app, target_module="tests.test_fastapi_auth_functions"
     )
     home_responses = openapi_json["paths"]["/refresh"]["get"]["responses"]
-    assert "403" in home_responses
+    # Newer FastAPI raises self.make_not_authenticated_error() (401), older raised 403 inline.
+    new_style = hasattr(fastapi.security.HTTPBearer, "make_not_authenticated_error")
+    assert ("401" if new_style else "403") in home_responses
