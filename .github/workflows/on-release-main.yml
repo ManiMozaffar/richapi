@@ -3,38 +3,32 @@ name: release-main
 on:
   release:
     types: [published]
-    branches: [main]
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Export tag
-        id: vars
-        run: echo tag=${GITHUB_REF#refs/*/} >> $GITHUB_OUTPUT
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
 
-      - name: Set up python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - uses: yezz123/setup-uv@v4
-
-      - name: Setup python ${{ matrix.python-version }} and uv
-        shell: bash
+      - name: Check version matches the release tag
         run: |
-          uv sync --frozen
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv version --short)"
+          init="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' richapi/__version__.py)"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$init" ]; then
+            echo "::error::Release tag is $tag but pyproject.toml has $pkg and __version__.py has $init. Bump both before releasing."
+            exit 1
+          fi
 
-      - name: Install the latest version of rye
-        uses: eifinger/setup-rye@v4
+      # rye publish bundles an old twine that rejects current hatchling metadata (2.4+).
+      - name: Build
+        run: uv build
 
-      - name: Build and publish
-        run: |
-          rye build
-          rye publish --token $PYPI_TOKEN --yes
+      - name: Publish
+        run: uv publish --token "$PYPI_TOKEN"
         env:
           PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-          RELEASE_VERSION: ${{ steps.vars.outputs.tag }}
