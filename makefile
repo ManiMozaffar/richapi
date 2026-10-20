@@ -14,6 +14,9 @@ test: ## Test the code with pytest
 	@echo "🚀 Testing code: Running pytest"
 	uv run pytest
 
+.PHONY: bench
+bench: ## Benchmark analysis speed against main on a generated project
+	uv run python benchmarks/compare.py --ref main --size medium
 
 .PHONY: docs
 docs:  ## Build and serve the documentation

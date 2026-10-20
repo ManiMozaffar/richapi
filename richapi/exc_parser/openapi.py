@@ -1,7 +1,7 @@
 import ast
 import inspect
+import logging
 import typing
-from functools import reduce
 from logging import getLogger
 from types import NoneType
 from typing import Callable, Union
@@ -393,7 +393,7 @@ T = typing.TypeVar("T")
 
 
 def flatten(to_be_flatten: list[list[T]]) -> list[T]:
-    return list(reduce(lambda x, y: x + y, to_be_flatten, []))
+    return [item for sublist in to_be_flatten for item in sublist]
 
 
 def _extract_starlette_exceptions(
@@ -404,12 +404,20 @@ def _extract_starlette_exceptions(
         [_find_explicit_exceptions(dep, target_module) for dep in dependency_tree]
     )
 
+    debug = logger.isEnabledFor(logging.DEBUG)
+    seen: set[tuple] = set()
     result: list[RaisedHTTPExceptionInfo] = []
     for exc in exceptions:
+        key = (exc.exception, id(exc.raise_ast))
+        if key in seen:  # same raise reached via several dependencies
+            continue
+        seen.add(key)
+
         if exc.exception is None:
-            logger.debug(
-                f"Could not resolve exception type for {ast.dump(exc.raise_ast)}"
-            )
+            if debug:
+                logger.debug(
+                    f"Could not resolve exception type for {ast.dump(exc.raise_ast)}"
+                )
             continue
         if not issubclass(exc.exception, StarletteHTTPException):
             logger.debug(
