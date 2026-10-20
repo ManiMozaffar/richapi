@@ -117,6 +117,10 @@ def _getsource(obj) -> str:
 
     try:
         lines, _ = inspect.findsource(module)
+    except Exception:
+        return inspect.getsource(obj)  # let stdlib decide (or raise)
+
+    try:
         class_finder(obj.__qualname__).visit(_parse_source(module))
     except found_exc as found:
         return "".join(inspect.getblock(lines[found.args[0] :]))
