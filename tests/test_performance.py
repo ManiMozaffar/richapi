@@ -192,3 +192,31 @@ def test_getsource_matches_stdlib():
     ]:
         assert _outcome(compiler._getsource, cls) == _outcome(inspect.getsource, cls)
     ExceptionFinder.clear_cache()
+
+
+def test_top_level_class_tree_matches_parsing_getsource():
+    import fastapi.params
+    import fastapi.routing
+    import fastapi.security
+    import pydantic.main
+    import starlette.responses
+
+    checked = 0
+    for module in (
+        sys.modules[MODULE],
+        fastapi.params,
+        fastapi.routing,
+        fastapi.security,
+        pydantic.main,
+        starlette.responses,
+    ):
+        for obj in vars(module).values():
+            if not inspect.isclass(obj) or obj.__module__ != module.__name__:
+                continue
+            reused = compiler._top_level_class_tree(obj)
+            if reused is None:
+                continue
+            assert ast.dump(reused) == ast.dump(ast.parse(inspect.getsource(obj)))
+            checked += 1
+    assert checked >= 20
+    ExceptionFinder.clear_cache()
