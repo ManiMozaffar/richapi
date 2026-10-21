@@ -1,6 +1,7 @@
 import ast
 import builtins
 import collections
+import contextlib
 import functools
 import inspect
 import logging
@@ -268,7 +269,57 @@ def find_explicit_exceptions(
     if tree is None:
         return []
 
+    if _auto_error_disabled(func):
+        with _analyzing_with_auto_error_disabled():
+            return _find_explicit_expection_recursively(
+                func, should_search_module_pred, tree
+            )
+
     return _find_explicit_expection_recursively(func, should_search_module_pred, tree)
+
+
+def _auto_error_disabled(obj: object) -> bool:
+    """
+    A security scheme built with auto_error=False, like `HTTPBearer(auto_error=False)`.
+    It returns None where it would otherwise raise.
+    """
+    return not inspect.isroutine(obj) and getattr(obj, "auto_error", None) is False
+
+
+def _sets_auto_error_false(call: ast.Call) -> bool:
+    """`HTTPBearer(auto_error=False)` written inline, as in `Depends(HTTPBearer(auto_error=False))`."""
+    return any(
+        keyword.arg == "auto_error"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is False
+        for keyword in call.keywords
+    )
+
+
+def _is_auto_error_check(test: ast.expr) -> bool:
+    """`if self.auto_error:`, the guard FastAPI's security schemes raise under."""
+    return (
+        isinstance(test, ast.Attribute)
+        and test.attr == "auto_error"
+        and isinstance(test.value, ast.Name)
+        and test.value.id == "self"
+    )
+
+
+@contextlib.contextmanager
+def _analyzing_with_auto_error_disabled():
+    """
+    Skip `if self.auto_error:` branches while analyzing a scheme built with auto_error=False.
+    The same methods analyzed this way find fewer exceptions, so they get a cache of their own.
+    """
+    visited, disabled = ExceptionFinder.visited, ExceptionFinder.auto_error_disabled
+    ExceptionFinder.visited = ExceptionFinder.visited_with_auto_error_disabled
+    ExceptionFinder.auto_error_disabled = True
+    try:
+        yield
+    finally:
+        ExceptionFinder.visited = visited
+        ExceptionFinder.auto_error_disabled = disabled
 
 
 def get_func_name(func: Callable) -> str:
@@ -726,6 +777,8 @@ def _node_handler(visitor_cls: type, node_cls: type) -> Optional[Callable]:
 
 class ExceptionFinder(ast.NodeVisitor):
     visited: dict[Callable, list[RaisedExceptionInfo]] = {}
+    visited_with_auto_error_disabled: dict[Callable, list[RaisedExceptionInfo]] = {}
+    auto_error_disabled = False
 
     # Same traversal order and dispatch as ast.NodeVisitor, minus its per-node string building,
     # getattr and generator overhead, and minus descending into leaf nodes. This is the hot loop.
@@ -763,6 +816,7 @@ class ExceptionFinder(ast.NodeVisitor):
     @classmethod
     def clear_cache(cls):
         cls.visited.clear()
+        cls.visited_with_auto_error_disabled.clear()
         _tree_cache.clear()
         _def_index_cache.clear()
         _class_line_cache.clear()
@@ -840,6 +894,13 @@ class ExceptionFinder(ast.NodeVisitor):
             else:
                 not_supported(target)
 
+        self.generic_visit(node)
+
+    def visit_If(self, node):
+        if ExceptionFinder.auto_error_disabled and _is_auto_error_check(node.test):
+            for child in node.orelse:
+                self.visit(child)
+            return
         self.generic_visit(node)
 
     def visit_Raise(self, node):
@@ -939,9 +1000,14 @@ class ExceptionFinder(ast.NodeVisitor):
                     )
 
             elif inspect.isclass(func_obj):
-                _excs = _find_all_class_exceptions(
-                    func_obj, self.should_search_module_pred
-                )
+                with (
+                    _analyzing_with_auto_error_disabled()
+                    if _sets_auto_error_false(node)
+                    else contextlib.nullcontext()
+                ):
+                    _excs = _find_all_class_exceptions(
+                        func_obj, self.should_search_module_pred
+                    )
                 self._add_exceptions(_excs)
                 self.populate_cache_if_not_exists(func_obj)
 
