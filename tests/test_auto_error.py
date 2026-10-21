@@ -1,6 +1,6 @@
 from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import (
     APIKeyQuery,
     HTTPAuthorizationCredentials,
@@ -14,6 +14,32 @@ from richapi.exc_parser.openapi import compile_openapi_from_fastapi
 app = FastAPI()
 
 optional_bearer = HTTPBearer(auto_error=False)
+
+
+def check_key(key: str, auto_error: bool) -> Optional[str]:
+    if not key:
+        if auto_error:
+            raise HTTPException(status_code=401, detail="Missing key")
+        return None
+    return key
+
+
+class KeyScheme:  # passes the flag in, like APIKeyBase.check_api_key on FastAPI 0.115.8
+    def __init__(self, auto_error: bool = True):
+        self.auto_error = auto_error
+
+    def __call__(self, key: str = "") -> Optional[str]:
+        return check_key(key, self.auto_error)
+
+
+@app.get("/key")
+def key(_=Depends(KeyScheme())):
+    pass
+
+
+@app.get("/optional-key")
+def optional_key(_=Depends(KeyScheme(auto_error=False))):
+    pass
 
 
 @app.get("/bearer")
@@ -84,6 +110,7 @@ def test_auto_error_false_skips_the_errors_it_turns_off():
     )
     assert error_statuses(openapi_json, "/bearer")
     assert error_statuses(openapi_json, "/bearer-again")
+    assert error_statuses(openapi_json, "/key") == {"401"}
     for path in (
         "/optional-bearer",
         "/optional-bearer-inline",
@@ -91,5 +118,6 @@ def test_auto_error_false_skips_the_errors_it_turns_off():
         "/optional-api-key",
         "/optional-oauth2",
         "/optional-openid",
+        "/optional-key",
     ):
         assert not error_statuses(openapi_json, path), path

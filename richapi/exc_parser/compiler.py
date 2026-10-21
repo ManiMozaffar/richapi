@@ -297,7 +297,12 @@ def _sets_auto_error_false(call: ast.Call) -> bool:
 
 
 def _is_auto_error_check(test: ast.expr) -> bool:
-    """`if self.auto_error:`, the guard FastAPI's security schemes raise under."""
+    """
+    `if self.auto_error:`, the guard FastAPI's security schemes raise under, or `if auto_error:`
+    where the flag is passed in, as in APIKeyBase.check_api_key on FastAPI 0.115.8 to 0.121.
+    """
+    if isinstance(test, ast.Name):
+        return test.id == "auto_error"
     return (
         isinstance(test, ast.Attribute)
         and test.attr == "auto_error"
