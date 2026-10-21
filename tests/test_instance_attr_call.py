@@ -28,6 +28,11 @@ class Exception3(RichHTTPException):
     status_code = 407
 
 
+@dataclass
+class Exception4(RichHTTPException):
+    status_code = 406
+
+
 def foo1():
     raise Exception1()
 
@@ -40,6 +45,10 @@ def foo3():
     raise Exception3()
 
 
+def foo4():
+    raise Exception4()
+
+
 class PaymentService:
     def __init__(self):
         foo1()
@@ -49,6 +58,9 @@ class PaymentService:
 
     def foo3(self):
         foo3()
+
+    def foo4(self):  # never called
+        foo4()
 
 
 class PaymentOrchestrator:
@@ -78,5 +90,6 @@ def test_class_is_detected():
     home_responses = openapi_json["paths"]["/payment"]["post"]["responses"]
     print(home_responses)
     assert "408" in home_responses
-    assert "407" not in home_responses
+    assert "407" in home_responses  # create_outer -> self.update_outer() -> foo3()
+    assert "406" not in home_responses
     assert "409" in home_responses
