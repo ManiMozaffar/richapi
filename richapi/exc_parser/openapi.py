@@ -398,10 +398,12 @@ def _fill_openapi_with_excpetions(
         if name != schema.schema_name:
             schema = schema.model_copy(update={"schema_name": name})
 
-        if schema.schema_name in added_schema_names:
+        # same detail can be raised with several status codes, keep each one
+        added_key = (schema.schema_name, schema.status_code)
+        if added_key in added_schema_names:
             continue
 
-        added_schema_names.add(schema.schema_name)
+        added_schema_names.add(added_key)
 
         str_status_code = str(schema.status_code)
         component_schemas.setdefault(schema.schema_name, schema.response_schema_json)
