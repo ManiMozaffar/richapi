@@ -340,13 +340,35 @@ def _dynamic_detail(
     return None
 
 
+def _bind_positional_args(
+    exc_type: type[Exception], ast_args: list[ast.expr]
+) -> dict[str, ast.expr]:
+    """Map positional args to exc_type.__init__ parameter names, {} when unknown."""
+    if any(isinstance(arg, ast.Starred) for arg in ast_args):
+        return {}
+    try:
+        sig = inspect.signature(exc_type.__init__)
+        sig = sig.replace(parameters=list(sig.parameters.values())[1:])  # skip self
+        return dict(sig.bind_partial(*ast_args).arguments)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _status_code_from_ast(node: Union[ast.expr, None]) -> Union[int, None]:
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.Attribute):  # status.HTTP_404_NOT_FOUND
+        return getattr(fastapi.status, node.attr, None)
+    if isinstance(node, ast.Name):  # HTTP_404_NOT_FOUND
+        return getattr(fastapi.status, node.id, None)
+    return None
+
+
 def _resolve_status_and_detail_from_exc_type(
     exc_type: type[Exception],
     ast_raise: ast.Raise,
     raising_func: Union[Callable, None] = None,
-) -> Union[
-    tuple[int, Union[str, FStringDetail, DictDetail, None], list[str]], None
-]:
+) -> Union[tuple[int, Union[str, FStringDetail, DictDetail, None], list[str]], None]:
     """Status code, detail and response header names of the raised exception."""
     ast_exc = ast_raise.exc
     headers = _literal_header_names(ast_exc)
@@ -429,6 +451,26 @@ def _resolve_status_and_detail_from_exc_type(
 
     ast_args = getattr(ast_exc, "args", None)
     args = []
+
+    if isinstance(ast_args, list) and found_detail is None:
+        # e.g. HTTPException(400, f"..."); only a parameter named `detail` counts
+        bound = _bind_positional_args(exc_type, ast_args)
+        positional_detail = (
+            _dynamic_detail(bound["detail"]) if "detail" in bound else None
+        )
+        if isinstance(positional_detail, (FStringDetail, DictDetail)):
+            status_node = bound.get("status_code")
+            positional_status = (
+                found_status_code
+                or (
+                    _resolve_status_code(status_node, raising_func)
+                    if status_node is not None
+                    else None
+                )
+                or _status_code_from_ast(status_node)
+            )
+            if positional_status:
+                return positional_status, positional_detail, headers
 
     if isinstance(ast_args, list):
         arg_values = [

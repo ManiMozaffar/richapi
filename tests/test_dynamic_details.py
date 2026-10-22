@@ -109,6 +109,14 @@ def custom_signature(item_id: int):
     raise WhatNotFound(f"Order {item_id} lookup")
 
 
+FORBIDDEN = 403
+
+
+@app.get("/constant-status-fstring")
+def constant_status_fstring(item_id: int):
+    raise HTTPException(FORBIDDEN, f"No access to {item_id}")
+
+
 def _openapi() -> dict:
     return compile_openapi_from_fastapi(app, __name__)
 
@@ -272,3 +280,8 @@ def test_custom_signature_positional_arg_is_not_detail():
     openapi = _openapi()
     # `what` is not the detail; output stays what it was before positional support
     assert "404" not in openapi["paths"]["/custom-signature"]["get"]["responses"]
+
+
+def test_positional_fstring_detail_with_constant_status():
+    openapi = _openapi()
+    assert _ref_name(openapi, "/constant-status-fstring", 403) == "NoAccessToSchema"
