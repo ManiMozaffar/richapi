@@ -31,6 +31,14 @@ def only_placeholder(item: int):
         raise HTTPException(status_code=500, detail=f"{e}")
 
 
+@app.get("/only-placeholder-positional")
+def only_placeholder_positional(item: int):
+    try:
+        return {"item": item}
+    except Exception as e:
+        raise HTTPException(500, detail=f"{e!r}")
+
+
 @app.get("/user")
 def user(user_id: int):
     raise HTTPException(status_code=404, detail=f"User {user_id} does not exist")
@@ -130,6 +138,14 @@ def test_fstring_detail_only_placeholders_falls_back():
         "title": "HTTPExceptionErrorSchema",
         "type": "object",
     }
+
+
+def test_fstring_detail_only_placeholders_positional_status_unchanged():
+    openapi = _openapi()
+    assert (
+        _ref_name(openapi, "/only-placeholder-positional", 500)
+        == "InternalServerErrorSchema"
+    )
 
 
 def test_different_fstrings_get_distinct_components():

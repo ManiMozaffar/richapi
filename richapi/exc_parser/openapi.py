@@ -2,6 +2,7 @@ import ast
 import functools
 import inspect
 import logging
+import re
 import typing
 from logging import getLogger
 from types import CodeType, ModuleType, NoneType
@@ -24,6 +25,8 @@ from richapi.exc_parser.compiler import (
 )
 from richapi.exc_parser.protocol import (
     BaseHTTPException,
+    DictDetail,
+    FStringDetail,
     HTTPExceptionSchema,
     _generic_json_schema_builder,
 )
@@ -296,11 +299,54 @@ def _resolve_arg(node: ast.AST, raising_func: Union[Callable, None]) -> typing.A
     return value if isinstance(value, (int, str)) else _MISSING
 
 
+_JSON_TYPES = {bool: "boolean", int: "integer", float: "number", str: "string"}
+
+
+def _dynamic_detail(
+    node: ast.expr,
+) -> Union[str, FStringDetail, DictDetail, None]:
+    """Read an f-string or dict-literal detail, None when it can't be read."""
+    if isinstance(node, ast.JoinedStr):
+        parts = tuple(
+            str(v.value) if isinstance(v, ast.Constant) else None for v in node.values
+        )
+        literal = "".join(part for part in parts if part is not None)
+        if None not in parts:  # f"..." without placeholders is a plain string
+            return literal
+        # nothing to name the schema after (e.g. f"{e}"), keep the generic schema
+        return FStringDetail(parts) if re.search("[a-zA-Z0-9]", literal) else None
+
+    if isinstance(node, ast.Dict):
+        items: list[tuple[str, Union[str, DictDetail, None]]] = []
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                return None
+            if isinstance(value, ast.Constant):
+                value_type = (
+                    "null"
+                    if value.value is None
+                    else _JSON_TYPES.get(type(value.value))
+                )
+            elif isinstance(value, ast.JoinedStr):
+                value_type = "string"
+            elif isinstance(value, ast.Dict):
+                nested = _dynamic_detail(value)
+                value_type = nested if isinstance(nested, DictDetail) else None
+            else:
+                value_type = None
+            items.append((key.value, value_type))
+        return DictDetail(tuple(items)) if items else None
+
+    return None
+
+
 def _resolve_status_and_detail_from_exc_type(
     exc_type: type[Exception],
     ast_raise: ast.Raise,
     raising_func: Union[Callable, None] = None,
-) -> Union[tuple[int, Union[str, None], list[str]], None]:
+) -> Union[
+    tuple[int, Union[str, FStringDetail, DictDetail, None], list[str]], None
+]:
     """Status code, detail and response header names of the raised exception."""
     ast_exc = ast_raise.exc
     headers = _literal_header_names(ast_exc)
@@ -314,7 +360,7 @@ def _resolve_status_and_detail_from_exc_type(
     ast_kwargs = getattr(ast_exc, "keywords", None)
     kwargs = {}
     found_status_code: Union[int, None] = None
-    found_detail: Union[str, None] = None
+    found_detail: Union[str, FStringDetail, DictDetail, None] = None
 
     if isinstance(ast_kwargs, list):
         for kwarg in ast_kwargs:
@@ -364,12 +410,15 @@ def _resolve_status_and_detail_from_exc_type(
                             f"Detail value must be a string or None, got {type(detail_value.value)}"
                         )
 
-                    found_detail: Union[str, None] = detail_value.value
+                    found_detail = detail_value.value
 
                 elif isinstance(
                     resolved := _resolve_name(detail_value, raising_func), str
                 ):
                     found_detail = resolved
+
+                else:
+                    found_detail = _dynamic_detail(detail_value)
 
             else:
                 if isinstance(kwarg.value, ast.Constant):
@@ -410,6 +459,8 @@ def _resolve_status_and_detail_from_exc_type(
             exc_headers = getattr(exc, "headers", None)
             if not headers and isinstance(exc_headers, dict):
                 headers = list(exc_headers)
+            if isinstance(found_detail, (FStringDetail, DictDetail)):
+                return int(exc.status_code), found_detail, headers  # type: ignore
             return (int(exc.status_code), exc.detail, headers)  # type: ignore
 
         if found_status_code:
