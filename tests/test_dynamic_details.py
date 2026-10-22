@@ -1,6 +1,7 @@
 import re
 
 from fastapi import FastAPI, HTTPException, status
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from richapi.exc_parser.openapi import compile_openapi_from_fastapi
 
@@ -81,6 +82,31 @@ def dict_name_key():
 @app.get("/constant")
 def constant():
     raise HTTPException(status_code=404, detail="Item not found")
+
+
+@app.get("/positional-fstring")
+def positional_fstring(item_id: int):
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown id {item_id}")
+
+
+@app.get("/positional-dict")
+def positional_dict():
+    raise HTTPException(422, {"field": "item_id", "msg": f"bad {1}"})
+
+
+@app.get("/starlette-positional")
+def starlette_positional(item_id: int):
+    raise StarletteHTTPException(403, f"Access denied to {item_id}")
+
+
+class WhatNotFound(HTTPException):
+    def __init__(self, what: str):
+        super().__init__(404, detail=f"{what} is gone")
+
+
+@app.get("/custom-signature")
+def custom_signature(item_id: int):
+    raise WhatNotFound(f"Order {item_id} lookup")
 
 
 def _openapi() -> dict:
@@ -209,3 +235,40 @@ def test_constant_detail_unchanged():
         "title": "ItemNotFoundSchema",
         "type": "object",
     }
+
+
+def test_positional_fstring_detail():
+    openapi = _openapi()
+    assert _ref_name(openapi, "/positional-fstring", 400) == "UnknownIdSchema"
+    assert _response(openapi, "/positional-fstring", 400)["description"] == (
+        "Unknown id {...}"
+    )
+    pattern = _component(openapi, "/positional-fstring", 400)["properties"]["detail"][
+        "pattern"
+    ]
+    assert re.fullmatch(pattern, "Unknown id 12")
+
+
+def test_positional_dict_detail():
+    openapi = _openapi()
+    assert _ref_name(openapi, "/positional-dict", 422) == "HTTPExceptionFieldMsgSchema"
+    detail = _component(openapi, "/positional-dict", 422)["properties"]["detail"]
+    assert detail["properties"] == {
+        "field": {"type": "string"},
+        "msg": {"type": "string"},
+    }
+
+
+def test_starlette_positional_fstring_detail():
+    openapi = _openapi()
+    assert _ref_name(openapi, "/starlette-positional", 403) == "AccessDeniedToSchema"
+    pattern = _component(openapi, "/starlette-positional", 403)["properties"]["detail"][
+        "pattern"
+    ]
+    assert re.fullmatch(pattern, "Access denied to 7")
+
+
+def test_custom_signature_positional_arg_is_not_detail():
+    openapi = _openapi()
+    # `what` is not the detail; output stays what it was before positional support
+    assert "404" not in openapi["paths"]["/custom-signature"]["get"]["responses"]
