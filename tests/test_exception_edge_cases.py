@@ -53,6 +53,6 @@ def test_read_root():
     )
     home_responses = openapi_json["paths"]["/home"]["get"]["responses"]
     print(home_responses)
-    assert "500" in home_responses
+    assert "500" not in home_responses  # caught in nested() and turned into a 501
     assert "501" in home_responses
     assert "502" in home_responses

@@ -719,6 +719,17 @@ def is_stdlib(module_name: str) -> bool:
     return module_spec.origin.startswith(_stdlib_path())
 
 
+def _reraises(handler: ast.ExceptHandler) -> bool:
+    """Whether the handler re-raises what it caught: bare `raise`, or `raise e` for `as e`."""
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Raise) and (
+            node.exc is None
+            or (isinstance(node.exc, ast.Name) and node.exc.id == handler.name)
+        ):
+            return True
+    return False
+
+
 def _concrete_subclasses(*bases: type) -> set[type]:
     found: set[type] = set()
     stack = list(bases)
@@ -930,6 +941,69 @@ class ExceptionFinder(ast.NodeVisitor):
 
         self.generic_visit(node)
         return
+
+    def visit_Try(self, node):
+        self._visit_try(node)
+
+    def visit_TryStar(
+        self, node
+    ):  # except* (3.11+) catches the same way for our purposes
+        self._visit_try(node)
+
+    def _visit_try(self, node: typing.Any):
+        """
+        Drop what the try body raises (directly or through calls) when a handler catches it and
+        doesn't re-raise it. Handlers, else and finally are visited as usual.
+        """
+        start = len(self.exceptions)
+        for stmt in node.body:
+            self.visit(stmt)
+
+        handlers = [
+            (self._handler_types(handler), _reraises(handler))
+            for handler in node.handlers
+        ]
+        kept = []
+        for exc in self.exceptions[start:]:
+            if self._is_caught(exc.exception, handlers):
+                self._seen.discard((exc.exception, id(exc.raise_ast)))
+            else:
+                kept.append(exc)
+        # filter our own list, never the cached lists of callees
+        self.exceptions[start:] = kept
+
+        for stmt in [*node.handlers, *node.orelse, *node.finalbody]:
+            self.visit(stmt)
+
+    def _handler_types(self, handler: ast.ExceptHandler) -> Optional[tuple[type, ...]]:
+        """Types the handler catches, None if any of them can't be resolved."""
+        if handler.type is None:  # bare except
+            return (BaseException,)
+        nodes = (
+            handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        )
+        types = []
+        for type_node in nodes:
+            name = _resolve_full_attribute_path(type_node)
+            exc_type = name and _exctact_type(name, self.func.__globals__)
+            if not exc_type:
+                return None
+            types.append(exc_type)
+        return tuple(types)
+
+    @staticmethod
+    def _is_caught(
+        exc_type: Optional[type],
+        handlers: list[tuple[Optional[tuple[type, ...]], bool]],
+    ) -> bool:
+        if exc_type is None:
+            return False
+        for types, reraises in handlers:  # the first matching handler wins
+            if types is None:
+                return False  # unknown handler may be the one catching it: keep
+            if issubclass(exc_type, types):
+                return not reraises
+        return False
 
     def _resolve_raised_callees(self, call: ast.Call) -> list[Callable]:
         callees = _resolve_functions_from_call_node(call, self.func, self.assignments)
