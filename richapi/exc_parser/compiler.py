@@ -411,6 +411,41 @@ def _find_method_node_in_cls(cls: ast.ClassDef, method_name: str):
     return None
 
 
+def _self_method(call: ast.Call, func: Callable) -> Optional[Callable]:
+    """
+    The function behind `self.method()` or `cls.method()` inside `func`, looked up (MRO included)
+    on the class `func` is defined in. Static and class methods come back as plain functions.
+    """
+    func_node = call.func
+    if not (
+        isinstance(func_node, ast.Attribute)
+        and isinstance(func_node.value, ast.Name)
+        and func_node.value.id in ("self", "cls")
+    ):
+        return None
+    qual_names = getattr(func, "__qualname__", "").split(".")
+    owner = func.__globals__.get(qual_names[-2]) if len(qual_names) > 1 else None
+    method = getattr(owner, func_node.attr, None)
+    return getattr(method, "__func__", method)
+
+
+def _method_def(method: Callable) -> Optional[ast.AST]:
+    """The def of a method, found in the class its `__qualname__` names."""
+    owner_name, _, method_name = getattr(method, "__qualname__", "").rpartition(".")
+    module = inspect.getmodule(method)
+    if module is None or not owner_name or "." in owner_name:
+        return None
+    try:
+        tree = _parse_source(module)
+    except Exception as error:
+        logger.debug(f"Failed to parse source code for {owner_name}", exc_info=error)
+        return None
+    cls_ast = _find_def(tree, "class", owner_name)
+    if cls_ast is None:
+        return None
+    return _find_method_node_in_cls(typing.cast(ast.ClassDef, cls_ast), method_name)
+
+
 def _resolve_full_attribute_path(node: ast.AST) -> Union[str, None]:
     """
     Reconstruct the full attribute name from an AST node, handling nested attributes and calls.
@@ -881,21 +916,8 @@ class ExceptionFinder(ast.NodeVisitor):
 
     def _resolve_raised_callees(self, call: ast.Call) -> list[Callable]:
         callees = _resolve_functions_from_call_node(call, self.func, self.assignments)
-        func_node = call.func
-        if (
-            not callees
-            and isinstance(func_node, ast.Attribute)
-            and isinstance(func_node.value, ast.Name)
-            and func_node.value.id in ("self", "cls")
-        ):
-            # self.method(): look it up (MRO included) on the class self.func is defined in
-            qual_names = getattr(self.func, "__qualname__", "").split(".")
-            owner = (
-                self.func.__globals__.get(qual_names[-2])
-                if len(qual_names) > 1
-                else None
-            )
-            callee = getattr(owner, func_node.attr, None)
+        if not callees:
+            callee = _self_method(call, self.func)
             callees = [callee] if callee is not None else []
 
         result = []
@@ -905,11 +927,28 @@ class ExceptionFinder(ast.NodeVisitor):
                 result.append(callee)
         return result
 
+    def _visit_method(self, method: Callable):
+        """Collect what a `self.method()` call can raise, like FastAPI's `self.check_api_key()`."""
+        module = inspect.getmodule(method)
+        if module is None or self._should_be_visited(module) is False:
+            return
+        method_def = _method_def(method)
+        if method_def is not None:
+            self._add_exceptions(
+                _find_explicit_expection_recursively(
+                    method, self.should_search_module_pred, method_def
+                )
+            )
+
     def visit_Call(self, node):
         """
         Handle function calls and recursively analyze called functions.
         """
         func_objs = _resolve_functions_from_call_node(node, self.func, self.assignments)
+        if not func_objs:
+            method = _self_method(node, self.func)
+            if method is not None:
+                self._visit_method(method)
 
         for func_obj in func_objs:
             if inspect.isfunction(func_obj):
