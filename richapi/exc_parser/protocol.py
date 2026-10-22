@@ -17,14 +17,19 @@ class HTTPExceptionSchema(BaseModel):
     """Description of the schema"""
     status_code: int
     """Status code of the exception"""
+    headers: list[str] = []
+    """Names of the response headers the exception sets"""
 
 
 class BaseHTTPException(HTTPException):
     status_code: int
     detail: str
+    headers: dict[str, str] | None = None
 
     def __init__(self):
-        super().__init__(status_code=self.status_code, detail=self.detail)
+        super().__init__(
+            status_code=self.status_code, detail=self.detail, headers=self.headers
+        )
 
     @classmethod
     def get_json_schema(cls) -> HTTPExceptionSchema:
@@ -130,10 +135,12 @@ def _build_generic_json_schema(
         detail_type = str
 
     schema = create_model(name, detail=(detail_type, ...))
+    headers = getattr(cls, "headers", None)
 
     return HTTPExceptionSchema(
         response_schema_json=schema.model_json_schema(),
         schema_name=name,
         status_code=status_code,
         schema_desc=detail or "No description provided",  # type: ignore
+        headers=list(headers) if isinstance(headers, dict) else [],
     )
