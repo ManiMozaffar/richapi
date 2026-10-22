@@ -1,0 +1,2 @@
+CONFLICT = 409
+CONFLICT_DETAIL = "Already exists"
