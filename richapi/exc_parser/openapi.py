@@ -343,22 +343,29 @@ def _fill_openapi_with_excpetions(
         else:
             schema = _extract_json_schema(ast_node, exc)
 
-        if schema is None or schema.schema_name in added_schema_names:
+        if schema is None:
+            continue
+
+        component_schemas = api_schema.setdefault("components", {}).setdefault(
+            "schemas", {}
+        )
+        # Same name, different content (e.g. same class name in two modules): suffix it.
+        name, suffix = schema.schema_name, 1
+        while component_schemas.get(name, schema.response_schema_json) != (
+            schema.response_schema_json
+        ):
+            suffix += 1
+            name = f"{schema.schema_name}{suffix}"
+        if name != schema.schema_name:
+            schema = schema.model_copy(update={"schema_name": name})
+
+        if schema.schema_name in added_schema_names:
             continue
 
         added_schema_names.add(schema.schema_name)
 
         str_status_code = str(schema.status_code)
-        component_schemas = api_schema.get("components", {}).get("schemas", {})
-        if schema.schema_name not in component_schemas:
-            if "components" not in api_schema:
-                api_schema["components"] = {"schemas": {}}
-            if "schemas" not in api_schema["components"]:
-                api_schema["components"]["schemas"] = {}
-
-            api_schema["components"]["schemas"][schema.schema_name] = (
-                schema.response_schema_json
-            )
+        component_schemas.setdefault(schema.schema_name, schema.response_schema_json)
 
         path = route.path_format  # the key FastAPI's get_openapi uses
         methods = [method.lower() for method in getattr(route, "methods")]

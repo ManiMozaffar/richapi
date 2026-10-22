@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import re
 from typing import Any, ClassVar, Literal
 
 from fastapi import HTTPException
@@ -125,7 +126,10 @@ def _build_generic_json_schema(
     if detail is not None:
         detail_type = Literal[detail]  # type: ignore
 
-        name = f"{try_to_camel_case(detail)}Schema"
+        # OpenAPI component keys must match ^[a-zA-Z0-9.\-_]+$
+        camel = re.sub(r"[^a-zA-Z0-9.\-_]", "", try_to_camel_case(detail))
+        if camel:
+            name = f"{camel}Schema"
     else:
         detail_type = str
 
