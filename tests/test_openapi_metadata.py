@@ -1,4 +1,5 @@
 import inspect
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
@@ -23,7 +24,9 @@ EXTERNAL_DOCS = "external_docs" in inspect.signature(get_openapi).parameters
 
 
 def make_app() -> FastAPI:
-    extra = {"openapi_external_docs": {"url": "https://docs"}} if EXTERNAL_DOCS else {}
+    extra: dict[str, Any] = (
+        {"openapi_external_docs": {"url": "https://docs/"}} if EXTERNAL_DOCS else {}
+    )
     app = FastAPI(
         title="T",
         version="1",
@@ -63,7 +66,7 @@ def test_compile_keeps_app_metadata():
     assert schema["info"]["termsOfService"] == "https://tos"
     assert "new-item" in schema["webhooks"]
     if EXTERNAL_DOCS:
-        assert schema["externalDocs"] == {"url": "https://docs"}
+        assert schema["externalDocs"] == {"url": "https://docs/"}
 
     assert_fastapi_schema_plus_exceptions(schema)
 
