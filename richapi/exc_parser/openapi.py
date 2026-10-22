@@ -1,9 +1,10 @@
 import ast
+import functools
 import inspect
 import logging
 import typing
 from logging import getLogger
-from types import ModuleType, NoneType
+from types import CodeType, ModuleType, NoneType
 from typing import Callable, Union
 
 import fastapi
@@ -16,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from richapi.exc_parser.compiler import (
     ExceptionFinder,
     RaisedHTTPExceptionInfo,
-    get_raise_globals,
+    get_raise_func,
 )
 from richapi.exc_parser.compiler import (
     find_explicit_exceptions as _find_explicit_exceptions,
@@ -242,18 +243,33 @@ def _literal_header_names(ast_exc: Union[ast.expr, None]) -> list[str]:
 _MISSING = object()
 
 
-def _resolve_name(node: ast.AST, func_globals: Union[dict, None]) -> typing.Any:
+@functools.lru_cache(maxsize=4096)
+def _local_names(code: CodeType) -> frozenset[str]:
+    """Locals, parameters and closure names of `code` and the functions/comprehensions nested in it."""
+    names = set(code.co_varnames) | set(code.co_cellvars) | set(code.co_freevars)
+    for const in code.co_consts:
+        if isinstance(const, CodeType):
+            names |= _local_names(const)
+    return frozenset(names)
+
+
+def _resolve_name(node: ast.AST, func: Union[Callable, None]) -> typing.Any:
     """
     Runtime value of a plain name or dotted attribute chain (`FORBIDDEN`, `errors.CONFLICT`,
-    `HTTPStatus.NOT_FOUND`) looked up in `func_globals`, or `_MISSING`. Calls and other expressions
-    are never evaluated, and attributes are only read off modules and classes (no instance properties).
+    `HTTPStatus.NOT_FOUND`) looked up in the globals of `func`, or `_MISSING`. Names that are local
+    to `func` are skipped, their value is only known at runtime. Calls and other expressions are
+    never evaluated, and attributes are only read off modules and classes (no instance properties).
     """
-    if func_globals is None:
+    func_globals = getattr(func, "__globals__", None)
+    code = getattr(func, "__code__", None)
+    if not isinstance(func_globals, dict) or not isinstance(code, CodeType):
         return _MISSING
     if isinstance(node, ast.Name):
+        if node.id in _local_names(code):
+            return _MISSING
         return func_globals.get(node.id, _MISSING)
     if isinstance(node, ast.Attribute):
-        owner = _resolve_name(node.value, func_globals)
+        owner = _resolve_name(node.value, func)
         if not isinstance(owner, (ModuleType, type)):
             return _MISSING
         try:
@@ -264,26 +280,26 @@ def _resolve_name(node: ast.AST, func_globals: Union[dict, None]) -> typing.Any:
 
 
 def _resolve_status_code(
-    node: ast.AST, func_globals: Union[dict, None]
+    node: ast.AST, raising_func: Union[Callable, None]
 ) -> Union[int, None]:
-    value = _resolve_name(node, func_globals)
+    value = _resolve_name(node, raising_func)
     # int subclasses cover IntEnum (HTTPStatus)
     if isinstance(value, int) and not isinstance(value, bool):
         return int(value)
     return None
 
 
-def _resolve_arg(node: ast.AST, func_globals: Union[dict, None]) -> typing.Any:
+def _resolve_arg(node: ast.AST, raising_func: Union[Callable, None]) -> typing.Any:
     if isinstance(node, ast.Constant):
         return node.value
-    value = _resolve_name(node, func_globals)
+    value = _resolve_name(node, raising_func)
     return value if isinstance(value, (int, str)) else _MISSING
 
 
 def _resolve_status_and_detail_from_exc_type(
     exc_type: type[Exception],
     ast_raise: ast.Raise,
-    func_globals: Union[dict, None] = None,
+    raising_func: Union[Callable, None] = None,
 ) -> Union[tuple[int, Union[str, None], list[str]], None]:
     """Status code, detail and response header names of the raised exception."""
     ast_exc = ast_raise.exc
@@ -325,7 +341,7 @@ def _resolve_status_and_detail_from_exc_type(
                     )
 
                 elif (
-                    resolved := _resolve_status_code(status_code_value, func_globals)
+                    resolved := _resolve_status_code(status_code_value, raising_func)
                 ) is not None:
                     # FORBIDDEN, HTTPStatus.NOT_FOUND, errors.CONFLICT, status.HTTP_404_NOT_FOUND
                     found_status_code = resolved
@@ -351,7 +367,7 @@ def _resolve_status_and_detail_from_exc_type(
                     found_detail: Union[str, None] = detail_value.value
 
                 elif isinstance(
-                    resolved := _resolve_name(detail_value, func_globals), str
+                    resolved := _resolve_name(detail_value, raising_func), str
                 ):
                     found_detail = resolved
 
@@ -369,7 +385,7 @@ def _resolve_status_and_detail_from_exc_type(
         arg_values = [
             value
             for arg in ast_args
-            if (value := _resolve_arg(arg, func_globals)) is not _MISSING
+            if (value := _resolve_arg(arg, raising_func)) is not _MISSING
         ]
 
         # we have some non-constant args and some constant args
@@ -415,7 +431,7 @@ def _extract_json_schema(
     ast_node: ast.Raise, exc: type[StarletteHTTPException]
 ) -> Union[HTTPExceptionSchema, None]:
     status_detail_pair = _resolve_status_and_detail_from_exc_type(
-        exc, ast_node, get_raise_globals(ast_node)
+        exc, ast_node, get_raise_func(ast_node)
     )
     if status_detail_pair is None:
         logger.debug(f"Could not resolve status code and detail for exception {exc}")
