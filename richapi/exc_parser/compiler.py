@@ -7,6 +7,7 @@ import logging
 import sys
 import sysconfig
 import textwrap
+import types
 import typing
 from importlib.util import find_spec
 from types import ModuleType
@@ -406,7 +407,10 @@ def _find_in_module(module: ast.Module, predicate: Callable[[ast.AST], bool]):
 
 def _find_method_node_in_cls(cls: ast.ClassDef, method_name: str):
     for node in cls.body:
-        if isinstance(node, ast.FunctionDef) and node.name == method_name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == method_name
+        ):
             return node
     return None
 
@@ -489,6 +493,30 @@ def _retrieve_from_annotations(func: Callable, var_name: str) -> Optional[type]:
     elif origin is not None and origin != Generic:
         return origin
     return result
+
+
+def _returned_class(callee) -> Optional[type]:
+    """
+    The class a call to `callee` gives back: the class itself, or a function's return annotation
+    when it names a single class (Annotated, Optional and generic parameters are dropped).
+    """
+    if inspect.isclass(callee):
+        return callee
+    if not (inspect.isfunction(callee) or inspect.ismethod(callee)):
+        return None
+    try:
+        hint = typing.get_type_hints(callee).get("return")
+    except Exception:
+        return None
+
+    origin = typing.get_origin(hint)
+    if origin is Union or origin is types.UnionType:
+        classes = [arg for arg in typing.get_args(hint) if arg is not type(None)]
+        hint = classes[0] if len(classes) == 1 else None
+        origin = typing.get_origin(hint)
+    if origin is not None:
+        hint = origin
+    return hint if inspect.isclass(hint) else None
 
 
 def _resolve_type_from_assigment(
@@ -1031,6 +1059,25 @@ class ExceptionFinder(ast.NodeVisitor):
                 )
             )
 
+    def _call_result_class(self, call: ast.Call) -> Optional[type]:
+        """The class `call` returns, following chains like `get_a().get_b()`."""
+        func_node = call.func
+        if isinstance(func_node, ast.Attribute) and isinstance(
+            func_node.value, ast.Call
+        ):
+            owner = self._call_result_class(func_node.value)
+            callee = getattr(owner, func_node.attr, None) if owner else None
+        else:
+            callees = _resolve_functions_from_call_node(
+                call, self.func, self.assignments
+            )
+            callee = callees[-1] if callees else None
+        if inspect.isfunction(callee) or inspect.ismethod(callee):
+            module = inspect.getmodule(callee)  # only trust factories we would analyze
+            if module is None or self._should_be_visited(module) is False:
+                return None
+        return _returned_class(callee)
+
     def visit_Call(self, node):
         """
         Handle function calls and recursively analyze called functions.
@@ -1040,6 +1087,19 @@ class ExceptionFinder(ast.NodeVisitor):
             method = _self_method(node, self.func)
             if method is not None:
                 self._visit_method(method)
+
+        # get_repo().find() / repo = get_repo(); repo.find(): a method of the returned class
+        if isinstance(node.func, ast.Attribute):
+            receiver = node.func.value
+            if isinstance(receiver, ast.Name):
+                receiver = self.assigned_calls.get(get_node_identifier(receiver))
+            elif isinstance(receiver, ast.Await):
+                receiver = receiver.value
+            if isinstance(receiver, ast.Call):
+                owner = self._call_result_class(receiver)
+                method = getattr(owner, node.func.attr, None) if owner else None
+                if method is not None:
+                    self._visit_method(getattr(method, "__func__", method))
 
         for func_obj in func_objs:
             if inspect.isfunction(func_obj):
