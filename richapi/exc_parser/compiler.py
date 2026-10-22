@@ -391,11 +391,30 @@ def _returned_exceptions(func: Callable) -> list[RaisedExceptionInfo]:
             exc_type = exc_name and _exctact_type(exc_name, func.__globals__)
             if exc_type:
                 raise_ast = ast.copy_location(
-                    ast.Raise(exc=node.value, cause=None), node
+                    ast.Raise(exc=_inline_headers_call(node.value, func), cause=None),
+                    node,
                 )
                 result.append(RaisedExceptionInfo(exc_type, raise_ast))
         todo.extend(ast.iter_child_nodes(node))
     return result
+
+
+def _inline_headers_call(call: ast.Call, func: Callable) -> ast.Call:
+    """
+    `HTTPException(..., headers=self.make_headers())` -> a copy with the dict literal `make_headers`
+    returns in place of the call, so header names can be read (FastAPI's HTTPBase does this).
+    """
+    for i, kwarg in enumerate(call.keywords):
+        if kwarg.arg != "headers" or not isinstance(kwarg.value, ast.Call):
+            continue
+        method = _self_method(kwarg.value, func)
+        method_def = _method_def(method) if method is not None else None
+        for stmt in getattr(method_def, "body", []):
+            if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Dict):
+                keywords = list(call.keywords)
+                keywords[i] = ast.keyword(arg="headers", value=stmt.value)
+                return ast.Call(func=call.func, args=call.args, keywords=keywords)
+    return call
 
 
 def _find_in_module(module: ast.Module, predicate: Callable[[ast.AST], bool]):

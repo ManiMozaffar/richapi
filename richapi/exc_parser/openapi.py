@@ -226,14 +226,29 @@ def _find_module_name_where_func_defined_in(func: Callable) -> Union[str, None]:
     return target_module
 
 
+def _literal_header_names(ast_exc: Union[ast.expr, None]) -> list[str]:
+    """Constant keys of a `headers={...}` dict literal passed to the exception."""
+    for kwarg in getattr(ast_exc, "keywords", None) or []:
+        if kwarg.arg == "headers" and isinstance(kwarg.value, ast.Dict):
+            return [
+                key.value
+                for key in kwarg.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            ]
+    return []
+
+
 def _resolve_status_and_detail_from_exc_type(
     exc_type: type[Exception],
     ast_raise: ast.Raise,
-) -> Union[tuple[int, Union[str, None]], None]:
-    if hasattr(exc_type, "status_code") and hasattr(exc_type, "detail"):
-        return (int(exc_type.status_code), exc_type.detail)  # type: ignore
-
+) -> Union[tuple[int, Union[str, None], list[str]], None]:
+    """Status code, detail and response header names of the raised exception."""
     ast_exc = ast_raise.exc
+    headers = _literal_header_names(ast_exc)
+
+    if hasattr(exc_type, "status_code") and hasattr(exc_type, "detail"):
+        return (int(exc_type.status_code), exc_type.detail, headers)  # type: ignore
+
     if not ast_exc:
         return None
 
@@ -291,7 +306,7 @@ def _resolve_status_and_detail_from_exc_type(
                     kwargs[kwarg.arg] = kwarg.value.value
 
     if found_detail and found_status_code:
-        return found_status_code, found_detail
+        return found_status_code, found_detail, headers
 
     ast_args = getattr(ast_exc, "args", None)
     args = []
@@ -304,9 +319,9 @@ def _resolve_status_and_detail_from_exc_type(
             status_arg = [arg for arg in arg_values if isinstance(arg, int)]
             #  We can't construct the exception object anymore
             if found_status_code:  # we have found status code in kwargs
-                return found_status_code, None
+                return found_status_code, None, headers
             elif status_arg:  #  fall back to finding any integer value
-                return status_arg[0], None
+                return status_arg[0], None, headers
             return None  # give up
 
         args.extend(arg_values)
@@ -318,10 +333,13 @@ def _resolve_status_and_detail_from_exc_type(
     try:
         exc = exc_type(*args, **kwargs)
         if hasattr(exc, "status_code") and hasattr(exc, "detail"):
-            return (int(exc.status_code), exc.detail)  # type: ignore
+            exc_headers = getattr(exc, "headers", None)
+            if not headers and isinstance(exc_headers, dict):
+                headers = list(exc_headers)
+            return (int(exc.status_code), exc.detail, headers)  # type: ignore
 
         if found_status_code:
-            return found_status_code, None
+            return found_status_code, None, headers
 
     except Exception as err:
         logger.debug(
@@ -330,7 +348,7 @@ def _resolve_status_and_detail_from_exc_type(
         )
 
         if found_status_code:
-            return found_status_code, None
+            return found_status_code, None, headers
 
     return None
 
@@ -342,8 +360,11 @@ def _extract_json_schema(
     if status_detail_pair is None:
         logger.debug(f"Could not resolve status code and detail for exception {exc}")
         return None
-    status_code, detail = status_detail_pair
+    status_code, detail, headers = status_detail_pair
     schema = _generic_json_schema_builder(exc, detail, status_code)
+    if schema is not None and headers:
+        # a copy, so the cached schema is untouched
+        schema.headers = list(dict.fromkeys(schema.headers + headers))
     return schema
 
 
@@ -389,12 +410,11 @@ def _fill_openapi_with_excpetions(
         methods = [method.lower() for method in getattr(route, "methods")]
 
         for method in methods:
-            this_status_resp = api_schema["paths"][path][method]["responses"].get(
-                str_status_code, None
-            )
+            responses = api_schema["paths"][path][method]["responses"]
+            this_status_resp = responses.get(str_status_code, None)
 
             if this_status_resp is None:
-                api_schema["paths"][path][method]["responses"][str_status_code] = {
+                this_status_resp = responses[str_status_code] = {
                     "description": schema.schema_desc,
                     "content": {
                         "application/json": {
@@ -429,6 +449,11 @@ def _fill_openapi_with_excpetions(
                     this_schema["anyOf"].append(
                         {"$ref": f"#/components/schemas/{schema.schema_name}"}
                     )
+
+            if schema.headers:
+                response_headers = this_status_resp.setdefault("headers", {})
+                for name in schema.headers:
+                    response_headers.setdefault(name, {"schema": {"type": "string"}})
 
 
 def build_dependency_tree(dependant: Dependant) -> list[Callable]:
