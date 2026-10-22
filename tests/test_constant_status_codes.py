@@ -57,6 +57,17 @@ def call_positional():
     raise HTTPException(compute(), "Computed")
 
 
+@app.get("/local-shadow")
+def local_shadow():
+    FORBIDDEN = compute()
+    raise HTTPException(FORBIDDEN, "Shadowed by local")
+
+
+@app.get("/param-shadow")
+def param_shadow(FORBIDDEN: int = 0):
+    raise HTTPException(status_code=FORBIDDEN, detail=MSG)
+
+
 def _responses(openapi_json: dict, path: str) -> dict:
     return openapi_json["paths"][path]["get"]["responses"]
 
@@ -83,3 +94,9 @@ def test_unresolvable_status_code_is_skipped():
     openapi_json = compile_openapi_from_fastapi(app, __name__)
     assert set(_responses(openapi_json, "/call")) == {"200"}
     assert set(_responses(openapi_json, "/call-positional")) == {"200"}
+
+
+@pytest.mark.parametrize("path", ["/local-shadow", "/param-shadow"])
+def test_local_name_shadowing_global_is_not_resolved(path: str):
+    openapi_json = compile_openapi_from_fastapi(app, __name__)
+    assert "403" not in _responses(openapi_json, path)
