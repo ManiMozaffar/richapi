@@ -382,10 +382,18 @@ def _fill_openapi_with_excpetions(
 
             else:
                 # HANDLE UNION
-                this_schema = this_status_resp["content"]["application/json"]["schema"]
+                json_content = this_status_resp.setdefault("content", {}).setdefault(
+                    "application/json", {}
+                )
+                this_schema = json_content.get("schema")
 
-                if "anyOf" not in this_schema:
-                    this_status_resp["content"]["application/json"]["schema"] = {
+                if this_schema is None:  # declared without a JSON schema
+                    json_content["schema"] = {
+                        "$ref": f"#/components/schemas/{schema.schema_name}"
+                    }
+
+                elif "anyOf" not in this_schema:
+                    json_content["schema"] = {
                         "anyOf": [
                             this_schema,
                             {"$ref": f"#/components/schemas/{schema.schema_name}"},
