@@ -790,6 +790,8 @@ class ExceptionFinder(ast.NodeVisitor):
         # call paths carries no extra info, and keeping every copy grows exponentially on call diamonds.
         self._seen: set[tuple] = set()
         self.assignments: dict[NodeIdentifier, str] = {}
+        # exc = HTTPException(401, ...) keeps the call, so `raise exc` can read its arguments
+        self.assigned_calls: dict[NodeIdentifier, ast.Call] = {}
         # self.cached_assignments[func] = self.assignments
         self.func = func
         self.should_search_module_pred = should_search_module_pred
@@ -846,6 +848,10 @@ class ExceptionFinder(ast.NodeVisitor):
             if isinstance(target, ast.Name):
                 var_name = get_node_identifier(target)
                 var_result = _extract_node_name(value, self.assignments)
+                if isinstance(value, ast.Call):
+                    self.assigned_calls[var_name] = value
+                else:
+                    self.assigned_calls.pop(var_name, None)
 
                 if var_result is not None:
                     self.assignments[var_name] = var_result
@@ -905,7 +911,18 @@ class ExceptionFinder(ast.NodeVisitor):
         exc_type = _exctact_type(exc_variable_name, self.func.__globals__)
 
         if exc_type:
-            self._add_exceptions([RaisedExceptionInfo(exc_type, node)])
+            raise_ast = node
+            assigned_call = (
+                self.assigned_calls.get(get_node_identifier(exc))
+                if isinstance(exc, ast.Name)
+                else None
+            )
+            if assigned_call is not None:
+                # raise exc: status and detail are the arguments of the call exc came from
+                raise_ast = ast.copy_location(
+                    ast.Raise(exc=assigned_call, cause=None), node
+                )
+            self._add_exceptions([RaisedExceptionInfo(exc_type, raise_ast)])
         elif isinstance(exc, ast.Call):
             # raise make_error() / raise self.make_error(): the callee returns the exception
             for callee in self._resolve_raised_callees(exc):
