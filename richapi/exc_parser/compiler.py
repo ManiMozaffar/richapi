@@ -9,6 +9,7 @@ import sysconfig
 import textwrap
 import types
 import typing
+import weakref
 from importlib.util import find_spec
 from types import ModuleType
 from typing import (
@@ -202,6 +203,17 @@ def _class_line_index(tree: ast.AST) -> dict[str, int]:
 
 _returned_exc_cache: dict = {}
 
+# Globals of the function each collected raise sits in, so status/detail names can be looked up.
+# A side table instead of a RaisedExceptionInfo field keeps `exc, raise_ast = info` unpacking working.
+_raise_globals: "weakref.WeakKeyDictionary[ast.Raise, dict]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def get_raise_globals(raise_ast: ast.Raise) -> Optional[dict]:
+    """Globals of the function `raise_ast` was collected from, if known."""
+    return _raise_globals.get(raise_ast)
+
 
 def _find_def(tree: ast.AST, kind: str, name: str) -> Optional[ast.AST]:
     """
@@ -394,6 +406,7 @@ def _returned_exceptions(func: Callable) -> list[RaisedExceptionInfo]:
                     ast.Raise(exc=_inline_headers_call(node.value, func), cause=None),
                     node,
                 )
+                _raise_globals[raise_ast] = func.__globals__
                 result.append(RaisedExceptionInfo(exc_type, raise_ast))
         todo.extend(ast.iter_child_nodes(node))
     return result
@@ -862,6 +875,7 @@ class ExceptionFinder(ast.NodeVisitor):
         _def_index_cache.clear()
         _class_line_cache.clear()
         _returned_exc_cache.clear()
+        _raise_globals.clear()
 
     def _add_exceptions(self, excs: list[RaisedExceptionInfo]):
         for exc in excs:
@@ -980,6 +994,7 @@ class ExceptionFinder(ast.NodeVisitor):
                 raise_ast = ast.copy_location(
                     ast.Raise(exc=assigned_call, cause=None), node
                 )
+            _raise_globals[raise_ast] = self.func.__globals__
             self._add_exceptions([RaisedExceptionInfo(exc_type, raise_ast)])
         elif isinstance(exc, ast.Call):
             # raise make_error() / raise self.make_error(): the callee returns the exception
