@@ -37,6 +37,34 @@ def load_openapi(
     return lambda: openapi_json
 
 
+def default_openapi_getter(app: FastAPI) -> dict:
+    """Build the schema with the same arguments FastAPI.openapi passes.
+
+    app.openapi itself can't be used, enrich_openapi replaces it. Arguments
+    the installed FastAPI's get_openapi doesn't take are left out.
+    """
+    kwargs: dict[str, typing.Any] = {
+        "title": app.title,
+        "version": app.version,
+        "openapi_version": app.openapi_version,
+        "summary": getattr(app, "summary", None),
+        "description": app.description,
+        "terms_of_service": app.terms_of_service,
+        "contact": app.contact,
+        "license_info": app.license_info,
+        "routes": app.routes,
+        "webhooks": app.webhooks.routes,
+        "tags": app.openapi_tags,
+        "servers": app.servers,
+        "separate_input_output_schemas": getattr(
+            app, "separate_input_output_schemas", True
+        ),
+        "external_docs": getattr(app, "openapi_external_docs", None),
+    }
+    accepted = inspect.signature(_get_openapi).parameters
+    return _get_openapi(**{k: v for k, v in kwargs.items() if k in accepted})
+
+
 def _validate_target_module(
     target_module: Union[list[str], str, None],
     target_obj: FastAPI | Callable,
@@ -72,12 +100,7 @@ def _validate_target_module(
 def enrich_openapi(
     app: FastAPI,
     target_module: Union[list[str], str, None] = None,
-    open_api_getter: Callable[[FastAPI], dict] = lambda app: _get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    ),
+    open_api_getter: Callable[[FastAPI], dict] = default_openapi_getter,
 ) -> Callable:
     target_module = _validate_target_module(target_module, app)
 
@@ -96,12 +119,7 @@ def enrich_openapi(
 def compile_openapi_from_fastapi(
     app: FastAPI,
     target_module: list[str] | str,
-    open_api_getter: Callable[[FastAPI], dict] = lambda app: _get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    ),
+    open_api_getter: Callable[[FastAPI], dict] = default_openapi_getter,
 ) -> dict:
     target_module = [target_module] if isinstance(target_module, str) else target_module
 
