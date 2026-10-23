@@ -1,9 +1,11 @@
 import ast
+import functools
 import inspect
 import logging
+import re
 import typing
 from logging import getLogger
-from types import NoneType
+from types import CodeType, ModuleType, NoneType
 from typing import Callable, Union
 
 import fastapi
@@ -16,12 +18,15 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from richapi.exc_parser.compiler import (
     ExceptionFinder,
     RaisedHTTPExceptionInfo,
+    get_raise_func,
 )
 from richapi.exc_parser.compiler import (
     find_explicit_exceptions as _find_explicit_exceptions,
 )
 from richapi.exc_parser.protocol import (
     BaseHTTPException,
+    DictDetail,
+    FStringDetail,
     HTTPExceptionSchema,
     _generic_json_schema_builder,
 )
@@ -238,10 +243,132 @@ def _literal_header_names(ast_exc: Union[ast.expr, None]) -> list[str]:
     return []
 
 
+_MISSING = object()
+
+
+@functools.lru_cache(maxsize=4096)
+def _local_names(code: CodeType) -> frozenset[str]:
+    """Locals, parameters and closure names of `code` and the functions/comprehensions nested in it."""
+    names = set(code.co_varnames) | set(code.co_cellvars) | set(code.co_freevars)
+    for const in code.co_consts:
+        if isinstance(const, CodeType):
+            names |= _local_names(const)
+    return frozenset(names)
+
+
+def _resolve_name(node: ast.AST, func: Union[Callable, None]) -> typing.Any:
+    """
+    Runtime value of a plain name or dotted attribute chain (`FORBIDDEN`, `errors.CONFLICT`,
+    `HTTPStatus.NOT_FOUND`) looked up in the globals of `func`, or `_MISSING`. Names that are local
+    to `func` are skipped, their value is only known at runtime. Calls and other expressions are
+    never evaluated, and attributes are only read off modules and classes (no instance properties).
+    """
+    func_globals = getattr(func, "__globals__", None)
+    code = getattr(func, "__code__", None)
+    if not isinstance(func_globals, dict) or not isinstance(code, CodeType):
+        return _MISSING
+    if isinstance(node, ast.Name):
+        if node.id in _local_names(code):
+            return _MISSING
+        return func_globals.get(node.id, _MISSING)
+    if isinstance(node, ast.Attribute):
+        owner = _resolve_name(node.value, func)
+        if not isinstance(owner, (ModuleType, type)):
+            return _MISSING
+        try:
+            return getattr(owner, node.attr, _MISSING)
+        except Exception:
+            return _MISSING
+    return _MISSING
+
+
+def _resolve_status_code(
+    node: ast.AST, raising_func: Union[Callable, None]
+) -> Union[int, None]:
+    value = _resolve_name(node, raising_func)
+    # int subclasses cover IntEnum (HTTPStatus)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int(value)
+    return None
+
+
+def _resolve_arg(node: ast.AST, raising_func: Union[Callable, None]) -> typing.Any:
+    if isinstance(node, ast.Constant):
+        return node.value
+    value = _resolve_name(node, raising_func)
+    return value if isinstance(value, (int, str)) else _MISSING
+
+
+_JSON_TYPES = {bool: "boolean", int: "integer", float: "number", str: "string"}
+
+
+def _dynamic_detail(
+    node: ast.expr,
+) -> Union[str, FStringDetail, DictDetail, None]:
+    """Read an f-string or dict-literal detail, None when it can't be read."""
+    if isinstance(node, ast.JoinedStr):
+        parts = tuple(
+            str(v.value) if isinstance(v, ast.Constant) else None for v in node.values
+        )
+        literal = "".join(part for part in parts if part is not None)
+        if None not in parts:  # f"..." without placeholders is a plain string
+            return literal
+        # nothing to name the schema after (e.g. f"{e}"), keep the generic schema
+        return FStringDetail(parts) if re.search("[a-zA-Z0-9]", literal) else None
+
+    if isinstance(node, ast.Dict):
+        items: list[tuple[str, Union[str, DictDetail, None]]] = []
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                return None
+            if isinstance(value, ast.Constant):
+                value_type = (
+                    "null"
+                    if value.value is None
+                    else _JSON_TYPES.get(type(value.value))
+                )
+            elif isinstance(value, ast.JoinedStr):
+                value_type = "string"
+            elif isinstance(value, ast.Dict):
+                nested = _dynamic_detail(value)
+                value_type = nested if isinstance(nested, DictDetail) else None
+            else:
+                value_type = None
+            items.append((key.value, value_type))
+        return DictDetail(tuple(items)) if items else None
+
+    return None
+
+
+def _bind_positional_args(
+    exc_type: type[Exception], ast_args: list[ast.expr]
+) -> dict[str, ast.expr]:
+    """Map positional args to exc_type.__init__ parameter names, {} when unknown."""
+    if any(isinstance(arg, ast.Starred) for arg in ast_args):
+        return {}
+    try:
+        sig = inspect.signature(exc_type.__init__)
+        sig = sig.replace(parameters=list(sig.parameters.values())[1:])  # skip self
+        return dict(sig.bind_partial(*ast_args).arguments)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _status_code_from_ast(node: Union[ast.expr, None]) -> Union[int, None]:
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    if isinstance(node, ast.Attribute):  # status.HTTP_404_NOT_FOUND
+        return getattr(fastapi.status, node.attr, None)
+    if isinstance(node, ast.Name):  # HTTP_404_NOT_FOUND
+        return getattr(fastapi.status, node.id, None)
+    return None
+
+
 def _resolve_status_and_detail_from_exc_type(
     exc_type: type[Exception],
     ast_raise: ast.Raise,
-) -> Union[tuple[int, Union[str, None], list[str]], None]:
+    raising_func: Union[Callable, None] = None,
+) -> Union[tuple[int, Union[str, FStringDetail, DictDetail, None], list[str]], None]:
     """Status code, detail and response header names of the raised exception."""
     ast_exc = ast_raise.exc
     headers = _literal_header_names(ast_exc)
@@ -255,7 +382,7 @@ def _resolve_status_and_detail_from_exc_type(
     ast_kwargs = getattr(ast_exc, "keywords", None)
     kwargs = {}
     found_status_code: Union[int, None] = None
-    found_detail: Union[str, None] = None
+    found_detail: Union[str, FStringDetail, DictDetail, None] = None
 
     if isinstance(ast_kwargs, list):
         for kwarg in ast_kwargs:
@@ -281,6 +408,12 @@ def _resolve_status_and_detail_from_exc_type(
                         status_code_value.value, (str, bytes, bool, int, float)
                     )
 
+                elif (
+                    resolved := _resolve_status_code(status_code_value, raising_func)
+                ) is not None:
+                    # FORBIDDEN, HTTPStatus.NOT_FOUND, errors.CONFLICT, status.HTTP_404_NOT_FOUND
+                    found_status_code = resolved
+
                 elif isinstance(status_code_value, ast.Attribute):
                     # maybe used like: status.HTTP_404_NOT_FOUND
                     left_hand_side = status_code_value.attr
@@ -299,7 +432,15 @@ def _resolve_status_and_detail_from_exc_type(
                             f"Detail value must be a string or None, got {type(detail_value.value)}"
                         )
 
-                    found_detail: Union[str, None] = detail_value.value
+                    found_detail = detail_value.value
+
+                elif isinstance(
+                    resolved := _resolve_name(detail_value, raising_func), str
+                ):
+                    found_detail = resolved
+
+                else:
+                    found_detail = _dynamic_detail(detail_value)
 
             else:
                 if isinstance(kwarg.value, ast.Constant):
@@ -311,8 +452,32 @@ def _resolve_status_and_detail_from_exc_type(
     ast_args = getattr(ast_exc, "args", None)
     args = []
 
+    if isinstance(ast_args, list) and found_detail is None:
+        # e.g. HTTPException(400, f"..."); only a parameter named `detail` counts
+        bound = _bind_positional_args(exc_type, ast_args)
+        positional_detail = (
+            _dynamic_detail(bound["detail"]) if "detail" in bound else None
+        )
+        if isinstance(positional_detail, (FStringDetail, DictDetail)):
+            status_node = bound.get("status_code")
+            positional_status = (
+                found_status_code
+                or (
+                    _resolve_status_code(status_node, raising_func)
+                    if status_node is not None
+                    else None
+                )
+                or _status_code_from_ast(status_node)
+            )
+            if positional_status:
+                return positional_status, positional_detail, headers
+
     if isinstance(ast_args, list):
-        arg_values = [arg.value for arg in ast_args if isinstance(arg, ast.Constant)]
+        arg_values = [
+            value
+            for arg in ast_args
+            if (value := _resolve_arg(arg, raising_func)) is not _MISSING
+        ]
 
         # we have some non-constant args and some constant args
         if arg_values and len(arg_values) != len(ast_args):
@@ -336,6 +501,8 @@ def _resolve_status_and_detail_from_exc_type(
             exc_headers = getattr(exc, "headers", None)
             if not headers and isinstance(exc_headers, dict):
                 headers = list(exc_headers)
+            if isinstance(found_detail, (FStringDetail, DictDetail)):
+                return int(exc.status_code), found_detail, headers  # type: ignore
             return (int(exc.status_code), exc.detail, headers)  # type: ignore
 
         if found_status_code:
@@ -356,7 +523,9 @@ def _resolve_status_and_detail_from_exc_type(
 def _extract_json_schema(
     ast_node: ast.Raise, exc: type[StarletteHTTPException]
 ) -> Union[HTTPExceptionSchema, None]:
-    status_detail_pair = _resolve_status_and_detail_from_exc_type(exc, ast_node)
+    status_detail_pair = _resolve_status_and_detail_from_exc_type(
+        exc, ast_node, get_raise_func(ast_node)
+    )
     if status_detail_pair is None:
         logger.debug(f"Could not resolve status code and detail for exception {exc}")
         return None
