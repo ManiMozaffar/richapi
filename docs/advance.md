@@ -73,3 +73,5 @@ async def read_item(item_id: int):
 exceptions = find_exceptions_in_api_functions(funcs=[read_item], fastapi_app=app)
 print(exceptions)  # {NotFoundException}
 ```
+
+To get every exception a function raises together with its status code and schema, not only the HTTP exception classes, use `get_function_exceptions`. See [Checking single functions](workflows.md#checking-single-functions).
