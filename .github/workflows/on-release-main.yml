@@ -32,3 +32,34 @@ jobs:
         run: uv publish --token "$PYPI_TOKEN"
         env:
           PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  docs:
+    # Only once the release is on PyPI, so the docs never describe an unpublished version.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # mike pushes to gh-pages
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # mike commits on top of the existing gh-pages branch
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install docs dependencies
+        run: uv sync --frozen
+
+      - name: Configure git for mike
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Deploy docs for this version as latest
+        run: uv run python deploy_docs.py

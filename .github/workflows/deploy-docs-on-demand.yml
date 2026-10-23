@@ -6,19 +6,29 @@ on:
 jobs:
   deploy-docs-on-demand:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # mike pushes to gh-pages
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Check out
+        uses: actions/checkout@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          fetch-depth: 0 # mike commits on top of the existing gh-pages branch
 
-      - uses: yezz123/setup-uv@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
 
-      - name: Setup python ${{ matrix.python-version }} and uv
-        shell: bash
+      - name: Install docs dependencies
+        run: uv sync --frozen
+
+      - name: Configure git for mike
         run: |
-          uv sync --frozen
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Deploy documentation
+      - name: Deploy docs for the current version as latest
         run: uv run python deploy_docs.py
