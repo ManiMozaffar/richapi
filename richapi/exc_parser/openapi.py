@@ -1,4 +1,5 @@
 import ast
+import contextlib
 import functools
 import inspect
 import logging
@@ -6,7 +7,7 @@ import re
 import typing
 from logging import getLogger
 from types import CodeType, ModuleType, NoneType
-from typing import Callable, Union
+from typing import Callable, NamedTuple, Union
 
 import fastapi
 from fastapi import FastAPI
@@ -17,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from richapi.exc_parser.compiler import (
     ExceptionFinder,
+    RaisedExceptionInfo,
     RaisedHTTPExceptionInfo,
     get_raise_func,
 )
@@ -28,7 +30,9 @@ from richapi.exc_parser.protocol import (
     DictDetail,
     FStringDetail,
     HTTPExceptionSchema,
+    _cached_generic_json_schema,
     _generic_json_schema_builder,
+    _rich_json_schema,
 )
 from richapi.exceptions import BaseRichAPIException
 
@@ -129,16 +133,101 @@ def compile_openapi_from_fastapi(
     target_module = [target_module] if isinstance(target_module, str) else target_module
 
     openapi_schema = open_api_getter(app)
-    for route in _iter_api_routes(app):
-        if route.include_in_schema:
-            exceptions = _extract_starlette_exceptions(
-                route, target_module + ["fastapi"]
-            )
-            _fill_openapi_with_excpetions(openapi_schema, route, exceptions)
-
-    ExceptionFinder.clear_cache()
+    with exception_analysis():
+        for route in _iter_api_routes(app):
+            if route.include_in_schema:
+                exceptions = _extract_starlette_exceptions(
+                    route, target_module + ["fastapi"]
+                )
+                _fill_openapi_with_excpetions(openapi_schema, route, exceptions)
 
     return openapi_schema
+
+
+class FunctionException(NamedTuple):
+    """One raise found by `get_function_exceptions`."""
+
+    exception: type[BaseException]
+    """The raised exception class"""
+    status_code: Union[int, None]
+    """Response status code, None for non-HTTP exceptions or when it can't be resolved"""
+    schema: Union[HTTPExceptionSchema, None]
+    """The response as it would be documented in the OpenAPI schema"""
+    raised_in: Union[Callable, None]
+    """The function holding the raise statement"""
+
+
+_analysis_depth = 0
+
+
+@contextlib.contextmanager
+def exception_analysis() -> typing.Iterator[None]:
+    """
+    Share parsed sources and analysis results between calls inside the block, and drop them
+    when the outermost block exits (also on error), so they don't stay in memory.
+
+    Example:
+        with exception_analysis():
+            for func in funcs:
+                print(get_function_exceptions(func, "myapp"))
+    """
+    # ponytail: one process-wide depth counter, like the caches it guards; not thread-safe
+    global _analysis_depth
+    _analysis_depth += 1
+    try:
+        yield
+    finally:
+        _analysis_depth -= 1
+        if _analysis_depth == 0:
+            ExceptionFinder.clear_cache()
+            _local_names.cache_clear()
+            _rich_json_schema.cache_clear()
+            _cached_generic_json_schema.cache_clear()
+
+
+def get_function_exceptions(
+    func: Callable,
+    target_module: Union[list[str], str, None] = None,
+    *,
+    app: Union[FastAPI, None] = None,
+) -> list[FunctionException]:
+    """
+    Every exception `func` can raise, including through the functions it calls in `target_module`,
+    one entry per raise statement. HTTP exceptions come with the status code and schema richapi
+    would document. With `app`, `func` must be one of its endpoints, and the exceptions of the
+    route's dependencies are included too.
+
+    Caches are cleared afterwards; call it inside `exception_analysis()` to share them between calls.
+    """
+    modules = _validate_target_module(target_module, func) + ["fastapi"]
+    if app is None:
+        funcs = [func]
+    else:
+        route = _find_fastapi_route_from_callback(app, func)
+        if route is None:
+            raise BaseRichAPIException(
+                f"Could not find the route for function {func} in FastAPI app {app}"
+            )
+        funcs = build_dependency_tree(route.dependant)
+
+    with exception_analysis():
+        result: list[FunctionException] = []
+        for exc in _collect_exceptions(funcs, modules):
+            assert exc.exception is not None
+            schema = (
+                _exception_schema(exc.exception, exc.raise_ast)
+                if issubclass(exc.exception, StarletteHTTPException)
+                else None
+            )
+            result.append(
+                FunctionException(
+                    exception=exc.exception,
+                    status_code=schema.status_code if schema else None,
+                    schema=schema,
+                    raised_in=get_raise_func(exc.raise_ast),
+                )
+            )
+        return result
 
 
 def _iter_api_routes(app: FastAPI) -> typing.Iterator[APIRoute]:
@@ -192,9 +281,10 @@ def find_exceptions_in_api_functions(
                 f"Could not find the route for function {func} in FastAPI app {fastapi_app}"
             )
 
-        exceptions = _extract_starlette_exceptions(
-            this_route, this_func_target_module + ["fastapi"]
-        )
+        with exception_analysis():
+            exceptions = _extract_starlette_exceptions(
+                this_route, this_func_target_module + ["fastapi"]
+            )
         for exc, _ in exceptions:
             result.add(exc)
 
@@ -537,6 +627,15 @@ def _extract_json_schema(
     return schema
 
 
+def _exception_schema(
+    exc: type[StarletteHTTPException], ast_node: ast.Raise
+) -> Union[HTTPExceptionSchema, None]:
+    if hasattr(exc, "get_json_schema"):
+        casted_exc = typing.cast(type[BaseHTTPException], exc)
+        return casted_exc.get_json_schema()
+    return _extract_json_schema(ast_node, exc)
+
+
 def _fill_openapi_with_excpetions(
     api_schema: dict,
     route: APIRoute,
@@ -545,12 +644,7 @@ def _fill_openapi_with_excpetions(
     added_schema_names = set()
 
     for exc, ast_node in exceptions:
-        if hasattr(exc, "get_json_schema"):
-            casted_exc = typing.cast(type[BaseHTTPException], exc)
-            schema = casted_exc.get_json_schema()
-        else:
-            schema = _extract_json_schema(ast_node, exc)
-
+        schema = _exception_schema(exc, ast_node)
         if schema is None:
             continue
 
@@ -647,17 +741,17 @@ def flatten(to_be_flatten: list[list[T]]) -> list[T]:
     return [item for sublist in to_be_flatten for item in sublist]
 
 
-def _extract_starlette_exceptions(
-    route: APIRoute, target_module: list[str]
-) -> list[RaisedHTTPExceptionInfo]:
-    dependency_tree = build_dependency_tree(route.dependant)
+def _collect_exceptions(
+    funcs: list[Callable], target_module: list[str]
+) -> list[RaisedExceptionInfo]:
+    """Resolved exceptions `funcs` raise, once per raise statement."""
     exceptions = flatten(
-        [_find_explicit_exceptions(dep, target_module) for dep in dependency_tree]
+        [_find_explicit_exceptions(func, target_module) for func in funcs]
     )
 
     debug = logger.isEnabledFor(logging.DEBUG)
     seen: set[tuple] = set()
-    result: list[RaisedHTTPExceptionInfo] = []
+    result: list[RaisedExceptionInfo] = []
     for exc in exceptions:
         key = (exc.exception, id(exc.raise_ast))
         if key in seen:  # same raise reached via several dependencies
@@ -670,6 +764,18 @@ def _extract_starlette_exceptions(
                     f"Could not resolve exception type for {ast.dump(exc.raise_ast)}"
                 )
             continue
+        result.append(exc)
+
+    return result
+
+
+def _extract_starlette_exceptions(
+    route: APIRoute, target_module: list[str]
+) -> list[RaisedHTTPExceptionInfo]:
+    dependency_tree = build_dependency_tree(route.dependant)
+    result: list[RaisedHTTPExceptionInfo] = []
+    for exc in _collect_exceptions(dependency_tree, target_module):
+        assert exc.exception is not None
         if not issubclass(exc.exception, StarletteHTTPException):
             logger.debug(
                 f"Skipping non-StarletteHTTPException exception: {exc.exception}"
