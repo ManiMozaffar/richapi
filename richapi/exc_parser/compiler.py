@@ -1029,14 +1029,14 @@ class ExceptionFinder(ast.NodeVisitor):
         nodes = (
             handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
         )
-        types = []
+        caught = []
         for type_node in nodes:
             name = _resolve_full_attribute_path(type_node)
             exc_type = name and _exctact_type(name, self.func.__globals__)
             if not exc_type:
                 return None
-            types.append(exc_type)
-        return tuple(types)
+            caught.append(exc_type)
+        return tuple(caught)
 
     @staticmethod
     def _is_caught(
@@ -1045,10 +1045,10 @@ class ExceptionFinder(ast.NodeVisitor):
     ) -> bool:
         if exc_type is None:
             return False
-        for types, reraises in handlers:  # the first matching handler wins
-            if types is None:
+        for caught, reraises in handlers:  # the first matching handler wins
+            if caught is None:
                 return False  # unknown handler may be the one catching it: keep
-            if issubclass(exc_type, types):
+            if issubclass(exc_type, caught):
                 return not reraises
         return False
 
