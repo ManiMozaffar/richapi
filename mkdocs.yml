@@ -103,4 +103,5 @@ nav:
       - Welcome: index.md
       - Conventions: conventions.md
       - Advance Usage: advance.md
+      - Workflows: workflows.md
       - Implemenetion Detail: implementation.md
